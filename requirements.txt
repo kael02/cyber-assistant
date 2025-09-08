@@ -17,3 +17,8 @@ psycopg2-binary
 langgraph 
 langchain-core
 langchain_openai
+
+fastapi
+uvicorn
+
+pydantic-settings

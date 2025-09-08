@@ -1,67 +1,42 @@
-import json
-import os
-from datetime import date, datetime
-from typing import List, Optional, Dict, TypedDict, Annotated
-import operator
 
-import litellm
-from dotenv import load_dotenv
+from datetime import date, datetime
+from typing import List
+
 from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langchain_core.tools import Tool
 from langchain_core.runnables import RunnableConfig
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from memori import Memori, create_memory_tool
-
-load_dotenv()
-
-
-# Define the state schema
-class AssistantState(TypedDict):
-    messages: Annotated[List, operator.add]
-    user_input: str
-    mode: str
-    current_task: str
-    memory_context: str
-    conversion_result: str
-    analysis_result: str
-    error_message: str
-    tool_calls: List[Dict]
-    session_id: str
-
-
-class PersonalDiaryAssistant:
+from models import AssistantState
+from config import get_settings, logger
+class CyberQueryAssistant:
     """LangGraph-based Personal Diary Assistant with advanced memory and workflow orchestration."""
 
-    def __init__(self, database_path: str = "security_queries.db"):
+    def __init__(self):
         """Initialize the LangGraph Security Query Assistant."""
-        self.database_path = database_path
-        self.database_user = os.getenv("DATABASE_USER")
-        self.database_password = os.getenv("DATABASE_PASSWORD")
-        self.database_host = os.getenv("DATABASE_HOST")
-        self.database_port = os.getenv("DATABASE_PORT")
-        self.database_name = os.getenv("DATABASE_NAME")
-        print("Initializing Memori with PostgreSQL database...")
+        self.settings = get_settings()
+        self.database_user = self.settings.DATABASE_USER
+        self.database_password = self.settings.DATABASE_PASSWORD
+        self.database_host = self.settings.DATABASE_HOST
+        self.database_port = self.settings.DATABASE_PORT
+        self.database_name = self.settings.DATABASE_NAME
+        logger.info("Initializing Memori with PostgreSQL database...")
         self.memory_system = Memori(
             database_connect=f"postgresql+psycopg2://{self.database_user}:{self.database_password}@{self.database_host}:{self.database_port}/{self.database_name}",
             conscious_ingest=True,
             auto_ingest=True,
         )
 
-        print("Enabling memory tracking...")
+        logger.info("Enabling memory tracking...")
         self.memory_system.enable()
-        self.llm = ChatOpenAI(model="gpt-5-nano", temperature=0)
+        self.llm = ChatOpenAI(model=self.settings.LLM_MODEL, temperature=self.settings.LLM_TEMPERATURE)
 
         self.finetuned_llm = ChatOpenAI(
-            model=os.getenv(
-                "FINETUNED_MODEL_KEY",
-                ""
-            ),
-            api_key=os.getenv("OPENAI_API_KEY"),
-            temperature=0,
+            model=self.settings.FINETUNED_MODEL_NAME,
+            api_key=self.settings.OPENAI_API_KEY,
+            temperature=self.settings.LLM_TEMPERATURE,
             timeout=60,
         )
 
@@ -85,13 +60,6 @@ class PersonalDiaryAssistant:
             Use memory_search to understand their past queries and suggest improvements.""",
         }
 
-        # Fine-tuned model configuration
-        self.model_config = {
-            "endpoint": os.getenv("FINETUNED_MODEL_ENDPOINT", "http://localhost:8000/convert"),
-            "api_key": os.getenv("FINETUNED_MODEL_KEY", "ft:gpt-4.1-mini-2025-04-14:personal:gpt-mini-generator:CC22K4Xm"),
-            "timeout": 30
-        }
-
         # Initialize tools
         self.tools = self._create_tools()
         self.memory_saver = MemorySaver()
@@ -111,7 +79,7 @@ class PersonalDiaryAssistant:
             except Exception as e:
                 return f"Memory search error: {str(e)}"
 
-        def convert_to_query_tool(natural_language: str, output_format: str = "custom", context: str = "") -> str:
+        def convert_to_query_tool(natural_language: str, context: str = "") -> str:
             """Convert natural language to structured query."""
             try:
                 # Search for similar past queries for context
@@ -130,7 +98,6 @@ class PersonalDiaryAssistant:
                 conversion_record = f"""
                 Time: {current_time}
                 Input: {natural_language}
-                Output Format: {output_format}
                 Generated Query: {converted_query.content}
                 Context: {context}
                 Similar Past Queries: {similar_queries}
@@ -335,30 +302,24 @@ class PersonalDiaryAssistant:
             user_input = state["user_input"]
             
             # Extract format if specified
-            output_format = "custom"
-            if "splunk" in user_input.lower():
-                output_format = "splunk"
-            elif "elastic" in user_input.lower():
-                output_format = "elastic"
-            elif "graylog" in user_input.lower():
-                output_format = "graylog"
+            
             
             # Search for similar queries
             similar_queries = self.memory_tool.execute(query=f"similar queries: {user_input[:50]}")
             state["memory_context"] = str(similar_queries) if similar_queries else ""
             
-            # Convert the query - FIXED: Use correct invoke() format
+            # Convert the query
             messages = [
                 SystemMessage(content=self.system_prompts["converter"]),
                 HumanMessage(content=user_input),
             ]
             
-            converted_query = self.finetuned_llm.invoke(messages)  # Fixed: pass messages directly
-            converted_text = converted_query.content  # Fixed: use .content instead of .choices
+            converted_query = self.finetuned_llm.invoke(messages)
+            converted_text = converted_query.content
             state["conversion_result"] = converted_text
             
             # Record the conversion
-            self._record_conversion(user_input, converted_text, output_format, state["memory_context"])
+            self._record_conversion(user_input, converted_text, state["memory_context"])
             
             state["messages"].append(AIMessage(content=f"Query converted: {converted_text}"))
             
@@ -388,7 +349,7 @@ class PersonalDiaryAssistant:
             # Search for relevant memories
             memories = self.memory_tool.execute(query=f"{analysis_type} {time_period} patterns trends")
             
-            # Generate analysis using LLM - FIXED: Use correct invoke() format
+            # Generate analysis using LLM
             analysis_prompt = f"""
             Based on query history: {memories}
             Provide analysis for {analysis_type} over {time_period} with specific insights and recommendations.
@@ -399,9 +360,9 @@ class PersonalDiaryAssistant:
                 HumanMessage(content=analysis_prompt),
             ]
             
-            response = self.llm.invoke(messages)  # Fixed: pass messages directly
+            response = self.llm.invoke(messages)
             
-            state["analysis_result"] = response.content  # Fixed: use .content
+            state["analysis_result"] = response.content
             state["messages"].append(AIMessage(content=f"Analysis completed: {state['analysis_result'][:200]}..."))
             
         except Exception as e:
@@ -431,7 +392,7 @@ class PersonalDiaryAssistant:
             # Get relevant history
             past_queries = self.memory_tool.execute(query=f"{query_type} queries examples")
             
-            # Generate suggestions - FIXED: Use correct invoke() format
+            # Generate suggestions
             suggestion_prompt = f"""
             Based on user history: {past_queries}
             Provide 5 personalized {query_type} query suggestions with best practices.
@@ -442,9 +403,9 @@ class PersonalDiaryAssistant:
                 HumanMessage(content=suggestion_prompt),
             ]
             
-            response = self.llm.invoke(messages)  # Fixed: pass messages directly
+            response = self.llm.invoke(messages)
             
-            state["analysis_result"] = response.content  # Fixed: use .content
+            state["analysis_result"] = response.content
             state["messages"].append(AIMessage(content=f"Suggestions generated for {query_type} queries"))
             
         except Exception as e:
@@ -474,7 +435,7 @@ class PersonalDiaryAssistant:
                 response = f"🔍 **Memory Search Results:**\n\n{state['memory_context']}"
             
             else:
-                # General response - FIXED: Use correct invoke() format
+                # General response
                 general_prompt = f"""
                 User input: {user_input}
                 Available context: {state.get('memory_context', '')}
@@ -482,14 +443,13 @@ class PersonalDiaryAssistant:
                 Provide a helpful response as a security query assistant.
                 """
                 
-                # Fixed invoke call - use messages as input
                 messages = [
                     SystemMessage(content=self.system_prompts["converter"]),
                     HumanMessage(content=general_prompt),
                 ]
                 
-                llm_response = self.llm.invoke(messages)  # Fixed: pass messages directly
-                response = llm_response.content  # Fixed: use .content instead of .choices[0].message.content
+                llm_response = self.llm.invoke(messages)
+                response = llm_response.content
             
             # Record conversation in memory
             self.memory_system.record_conversation(
@@ -511,13 +471,12 @@ class PersonalDiaryAssistant:
         state["messages"].append(AIMessage(content=error_response))
         return state
 
-    def _record_conversion(self, user_input: str, converted_query: str, output_format: str, context: str):
+    def _record_conversion(self, user_input: str, converted_query: str, context: str):
         """Record conversion for learning."""
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
         conversion_record = f"""
         Time: {current_time}
         Input: {user_input}
-        Output Format: {output_format}
         Generated Query: {converted_query}
         Context: {context}
         Status: {'Success' if not converted_query.startswith('Error:') else 'Failed'}
@@ -559,8 +518,7 @@ class PersonalDiaryAssistant:
         except Exception as e:
             return f"Error processing your request: {str(e)}"
 
-    def record_correction(self, original_nl: str, original_query: str, corrected_query: str, 
-                         output_format: str, feedback: str = "") -> str:
+    def record_correction(self, original_nl: str, original_query: str, corrected_query: str, feedback: str = "") -> str:
         """Record user corrections to improve future conversions."""
         try:
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -570,7 +528,6 @@ class PersonalDiaryAssistant:
             Original Natural Language: {original_nl}
             Original Generated Query: {original_query}
             Corrected Query: {corrected_query}
-            Output Format: {output_format}
             User Feedback: {feedback}
             """
 
@@ -609,22 +566,18 @@ class PersonalDiaryAssistant:
                 HumanMessage(content=summary_prompt),
             ]
 
-            response = self.llm.invoke(messages)  # Fixed
-            return response.content  # Fixed
+            response = self.llm.invoke(messages)
+            return response.content
 
         except Exception as e:
             return f"Error generating summary: {str(e)}"
 
-    # --- add these methods inside class PersonalDiaryAssistant ---
-
-    # Simple wrapper used by the Streamlit "Chat" tab
-    def chat_with_memory(self, user_input: str, session_id: str = "streamlit") -> str:
+    # Wrapper methods for Streamlit/API compatibility
+    def chat_with_memory(self, user_input: str, session_id: str = "api") -> str:
         return self.process_user_input(user_input, session_id=session_id)
 
-    # Wrapper Streamlit uses in the sidebar and examples
-    def convert_to_query(self, natural_language: str, output_format: str = "custom", context: str = "") -> str:
+    def convert_to_query(self, natural_language: str, context: str = "") -> str:
         try:
-            # mirror the behavior of query_conversion_node + record
             similar = ""
             try:
                 similar = self.memory_tool.execute(query=f"similar queries: {natural_language[:50]}")
@@ -636,17 +589,15 @@ class PersonalDiaryAssistant:
                 HumanMessage(content=natural_language),
             ]
             
-            converted = self.finetuned_llm.invoke(messages)  # Fixed
-            converted_text = converted.content  # Fixed
-            self._record_conversion(natural_language, converted_text, output_format, str(similar) if similar else context)
+            converted = self.finetuned_llm.invoke(messages)
+            converted_text = converted.content
+            self._record_conversion(natural_language, converted_text, str(similar) if similar else context)
             return converted_text
         except Exception as e:
             return f"Error: {str(e)}"
 
-    # Wrapper for the "Analyze Patterns" quick action and tab
     def analyze_query_patterns(self, analysis_type: str = "overall", time_period: str = "month") -> str:
         try:
-            # reuse the same logic as pattern_analysis_node
             memories = self.memory_tool.execute(query=f"{analysis_type} {time_period} patterns trends")
             analysis_prompt = f"""
             Based on query history: {memories}
@@ -658,12 +609,11 @@ class PersonalDiaryAssistant:
                 HumanMessage(content=analysis_prompt),
             ]
             
-            response = self.llm.invoke(messages)  # Fixed
-            return response.content  # Fixed
+            response = self.llm.invoke(messages)
+            return response.content
         except Exception as e:
             return f"Pattern analysis error: {str(e)}"
 
-    # Wrapper for "Get Suggestions"
     def get_query_suggestions(self, query_type: str = "general") -> str:
         try:
             past_queries = self.memory_tool.execute(query=f"{query_type} queries examples successful conversions")
@@ -686,70 +636,14 @@ class PersonalDiaryAssistant:
                 HumanMessage(content=suggestion_prompt),
             ]
             
-            response = self.llm.invoke(messages)  # Fixed
-            return response.content  # Fixed
+            response = self.llm.invoke(messages)
+            return response.content
         except Exception as e:
             return f"Suggestion error: {str(e)}"
 
-    # Wrapper for the "Memory Search" field
     def memory_search(self, query: str) -> str:
         try:
             result = self.memory_tool.execute(query=query)
             return str(result) if result else "No relevant memories found."
         except Exception as e:
             return f"Memory search error: {str(e)}"
-
-
-
-
-def main():
-    """Main function for command-line interface."""
-    print("🔍 LangGraph Security Query Assistant with Memory")
-    print("=" * 60)
-    print("Welcome to your intelligent security query converter!")
-    print("Powered by LangGraph workflow orchestration")
-    print("Type 'exit' or 'quit' to stop.\n")
-
-    # Initialize the assistant
-    assistant = PersonalDiaryAssistant("security_queries.db")
-
-    print("💡 Try these commands:")
-    print("- Convert: 'Find network activity from IP 192.168.1.100'")
-    print("- Ask for suggestions: 'Show me examples of network queries'")
-    print("- Analyze patterns: 'What are my most common query types?'")
-    print("- Record corrections: 'The query should be process_name:chrome.exe'")
-    print("- Type 'summary' for today's conversion overview")
-    print("- Specify format: 'Convert to Splunk format: user login from admin account'\n")
-
-    session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-    while True:
-        try:
-            user_input = input("You: ").strip()
-
-            if user_input.lower() in ["exit", "quit", "bye"]:
-                print("\nAssistant: Goodbye! Your query patterns are safely stored for our next session. 🔍")
-                break
-
-            if user_input.lower() == "summary":
-                response = assistant.get_conversion_summary()
-                print(f"\n📊 Conversion Summary:\n{response}\n")
-                continue
-
-            if not user_input:
-                continue
-
-            # Process the input through LangGraph
-            response = assistant.process_user_input(user_input, session_id)
-            print(f"\nAssistant: {response}\n")
-
-        except KeyboardInterrupt:
-            print("\n\nAssistant: Goodbye! Your query patterns are safely stored. 🔍")
-            break
-        except Exception as e:
-            print(f"\nError: {str(e)}")
-            print("Please try again.\n")
-
-
-if __name__ == "__main__":
-    main()
