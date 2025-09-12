@@ -2,7 +2,7 @@
 memorisdk>=0.1.0
 litellm>=1.0.0
 python-dotenv>=1.0.0
-
+python-multipart
 # Streamlit UI Dependencies  
 streamlit>=1.28.0
 plotly>=5.17.0
@@ -11,12 +11,16 @@ pandas>=2.0.0
 # Additional useful packages
 openai>=1.0.0
 requests>=2.31.0
-
-psycopg2-binary
+sqlalchemy
 
 langgraph 
 langchain-core
-langchain_openai
+langchain-openai
+langchain-postgres
+langchain-text-splitters
+sqlalchemy 
+psycopg[binary]
+
 
 fastapi
 uvicorn
