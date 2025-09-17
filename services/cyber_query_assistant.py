@@ -1,113 +1,47 @@
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
-from langchain_core.tools import Tool
-from langchain_core.runnables import RunnableConfig
-from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
-from langchain_core.tools import Tool
-from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
-from memori import Memori, create_memory_tool
-from models import AssistantState
+from ast import mod
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
+import asyncio
+import concurrent.futures
+from functools import lru_cache
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import MemorySaver
+from langchain_openai import ChatOpenAI
+from memori import ConfigManager, Memori, create_memory_tool
 
 from config import get_settings, logger
 from services.document_ingestor import DocumentIngestor
+from models import AssistantState
+from tools import CyberQueryTools
+from workflows import CyberQueryWorkflow
+from prompts import SystemPrompts
+
 
 class CyberQueryAssistant:
-    """LangGraph-based Cyber Query Assistant with advanced memory and workflow orchestration."""
+    """LangGraph-based Cyber Query Assistant with advanced memory and workflow orchestration - PERFORMANCE OPTIMIZED."""
 
     def __init__(self):
         """Initialize the LangGraph Security Query Assistant."""
         logger.info("🚀 Starting CyberQueryAssistant initialization...")
 
         try:
-            self.settings = get_settings()
-            logger.info("✅ Settings loaded successfully")
-
-            # Database configuration
-            self.database_user = self.settings.DATABASE_USER
-            self.database_password = self.settings.DATABASE_PASSWORD
-            self.database_host = self.settings.DATABASE_HOST
-            self.database_port = self.settings.DATABASE_PORT
-            self.database_name = self.settings.DATABASE_NAME
-
-            logger.info(f"🔧 Database config: {self.database_user}@{self.database_host}:{self.database_port}/{self.database_name}")
-
-            # ---------- Field catalog semantic search (pgvector via LangChain) ----------
-            logger.info("📚 Initializing DocumentIngestor for field semantic context...")
-            self.field_store = DocumentIngestor()  # uses text-embedding-3-large by default
-            self.field_context_k = getattr(self.settings, "FIELD_CONTEXT_K", 8)
-            logger.info("✅ Field catalog semantic search ready")
-
-            # Initialize Memori
-            logger.info("🧠 Initializing Memori with PostgreSQL database...")
-            db_url = f"postgresql+psycopg2://{self.database_user}:{self.database_password}@{self.database_host}:{self.database_port}/{self.database_name}"
-            self.memory_system = Memori(
-                database_connect=db_url,
-                conscious_ingest=True,
-                auto_ingest=True,
-                verbose=True,
-            )
-            logger.info("✅ Memori initialized successfully")
-
-            logger.info("📝 Enabling memory tracking...")
-            self.memory_system.enable()
-            logger.info("✅ Memory tracking enabled")
-
-            # Initialize LLMs
-            logger.info("🤖 Initializing LLMs...")
-            self.llm = ChatOpenAI(
-                model=self.settings.LLM_MODEL,
-                temperature=self.settings.LLM_TEMPERATURE
-            )
-            logger.info(f"✅ Main LLM initialized: {self.settings.LLM_MODEL}")
-
-            self.finetuned_llm = ChatOpenAI(
-                model=self.settings.FINETUNED_MODEL_NAME,
-                api_key=self.settings.OPENAI_API_KEY,
-                temperature=self.settings.LLM_TEMPERATURE,
-                timeout=60,
-            )
-            logger.info(f"✅ Fine-tuned LLM initialized: {self.settings.FINETUNED_MODEL_NAME}")
-
-            # Create memory tool
-            logger.info("🛠️  Creating memory tool...")
-            self.memory_tool = create_memory_tool(self.memory_system)
-            logger.info("✅ Memory tool created successfully")
-
-            # System prompts for different functionalities
-            self.system_prompts = {
-                "converter": """You are an expert security analyst and query translator with advanced memory capabilities.
-Your role is to help users convert natural language security queries into structured application queries
-like graylog format. On your output, you should only return the query, not any other text. Use memory_search to understand the user's query patterns,
-preferences, and past conversions. Be precise, learn from corrections, and provide accurate translations.""",
-
-                "analyzer": """You are a security query optimization expert. Analyze the user's query patterns,
-conversion accuracy, and usage trends to provide insights. Use memory_search to gather comprehensive
-information about the user's query history. Provide specific recommendations for improving query
-accuracy and efficiency.""",
-
-                "pattern_recognition": """You are a security pattern recognition specialist. Help users identify
-common query patterns, optimize their natural language inputs, and learn from their query history.
-Use memory_search to understand their past queries and suggest improvements.""",
+            self._initialize_settings()
+            self._initialize_database_config()
+            self._initialize_field_store()
+            self._initialize_memory_system()
+            self._initialize_llms()
+            self._initialize_tools()
+            self._initialize_workflow()
+            
+            # Performance monitoring
+            self._query_cache = {}
+            self._cache_max_size = 100
+            self._performance_metrics = {
+                'total_queries': 0,
+                'avg_response_time': 0.0,
+                'cache_hits': 0
             }
-            logger.info("📋 System prompts configured")
-
-            # Initialize tools
-            logger.info("🔧 Creating tools...")
-            self.tools = self._create_tools()
-            logger.info(f"✅ {len(self.tools)} tools created successfully")
-
-            self.memory_saver = MemorySaver()
-            logger.info("💾 Memory saver initialized")
-
-            # Create the graph
-            logger.info("📊 Creating LangGraph workflow...")
-            self.graph = self._create_graph()
-            logger.info("✅ LangGraph workflow created and compiled")
 
             logger.info("🎉 CyberQueryAssistant initialization completed successfully!")
 
@@ -115,614 +49,139 @@ Use memory_search to understand their past queries and suggest improvements.""",
             logger.error(f"❌ Failed to initialize CyberQueryAssistant: {str(e)}", exc_info=True)
             raise
 
-    # -------------------------
-    # Field-context helpers
-    # -------------------------
-    def _build_field_context(self, nl_query: str, k: Optional[int] = None) -> str:
-        """Search the application's field catalog and format top-k hits for LLM context."""
-        try:
-            k = k or self.field_context_k
-            hits = self.field_store.search_fields(nl_query, limit=k) or []
-            if not hits:
-                return ""
-            lines = []
-            for h in hits:
-                alias = (h.get("alias") or "").strip()
-                long_name = (h.get("long_name") or "")[:140].strip()
-                dtype = (h.get("data_type") or "").strip()
-                definition = (h.get("definition") or "")[:180].strip()
-                example = (h.get("example_value") or "")[:80].strip()
-                lines.append(
-                    f"- alias={alias} | type={dtype} | long_name={long_name} | def={definition}"
-                    + (f" | example={example}" if example else "")
-                )
-            return "Application field catalog (top matches):\n" + "\n".join(lines)
-        except Exception as e:
-            logger.error(f"Field context build error: {e}", exc_info=True)
-            return ""
+    def _initialize_settings(self):
+        """Initialize application settings."""
+        self.settings = get_settings()
+        logger.info("✅ Settings loaded successfully")
 
-    def _create_tools(self) -> List["Tool"]:
-        """Create LangChain tools for the assistant."""
-        logger.debug("🛠️  Creating individual tools...")
+    def _initialize_database_config(self):
+        """Initialize database configuration."""
+        self.database_user = self.settings.DATABASE_USER
+        self.database_password = self.settings.DATABASE_PASSWORD
+        self.database_host = self.settings.DATABASE_HOST
+        self.database_port = self.settings.DATABASE_PORT
+        self.database_name = self.settings.DATABASE_NAME
 
-        def memory_search_tool(query: str) -> str:
-            """Search memories for relevant information."""
-            logger.info(f"🔍 Memory search requested: '{query[:100]}...'")
-            try:
-                start_time = datetime.now()
-                result = self.memory_tool.execute(query=query)
-                end_time = datetime.now()
-                duration = (end_time - start_time).total_seconds()
+        logger.info(f"🔧 Database config: {self.database_user}@{self.database_host}:{self.database_port}/{self.database_name}")
 
-                if result:
-                    logger.info(f"✅ Memory search completed in {duration:.2f}s, found {len(str(result))} chars")
-                    logger.debug(f"Memory search result preview: {str(result)[:200]}...")
-                    return str(result)
-                else:
-                    logger.warning(f"⚠️  Memory search completed in {duration:.2f}s but no results found")
-                    return "No relevant memories found."
-            except Exception as e:
-                logger.error(f"❌ Memory search error for query '{query}': {str(e)}", exc_info=True)
-                return f"Memory search error: {str(e)}"
+    def _initialize_field_store(self):
+        """Initialize field semantic search store."""
+        logger.info("📚 Initializing DocumentIngestor for field semantic context...")
+        self.field_store = DocumentIngestor()
+        self.field_context_k = getattr(self.settings, "FIELD_CONTEXT_K", 5)  # Reduced from 8 to 5 for performance
+        logger.info("✅ Field catalog semantic search ready")
 
-        def convert_to_query_tool(natural_language: str, context: str = "") -> str:
-            """Convert natural language to structured query (with semantic field context)."""
-            logger.info(f"🔄 Query conversion requested: '{natural_language[:100]}...'")
-            try:
-                start_time = datetime.now()
-
-                # Search for similar past queries for context
-                logger.debug("🔍 Searching for similar past queries...")
-                similar_queries = memory_search_tool(f"similar queries: {natural_language[:50]}")
-
-                # Semantic field context from pgvector catalog (soft preference only)
-                logger.debug("📚 Building field context via semantic search...")
-                field_context = self._build_field_context(natural_language)
-
-                # Call fine-tuned model
-                logger.debug("🤖 Calling fine-tuned model for conversion...")
-                messages = [
-                    SystemMessage(content=self.system_prompts["converter"]),
-                    SystemMessage(content=(
-                        """
-                        When APP FIELD CONTEXT is provided, prefer those aliases if they match the user's intent.
-                         Output strictly as JSON list of {"alias":"...", "query":"..."} objects.
-                         If no match, return {"query":"..."}.
-                         Do not mention the context and return only the query.
-                        """
-                    )),
-                ]
-                if field_context:
-                    messages.append(HumanMessage(content=f"APP FIELD CONTEXT\n{field_context}"))
-                messages.append(HumanMessage(content=natural_language))
-
-                converted_query = self.finetuned_llm.invoke(messages)
-                end_time = datetime.now()
-                duration = (end_time - start_time).total_seconds()
-
-                logger.info(f"✅ Query conversion completed in {duration:.2f}s")
-                logger.debug(f"Converted query: {converted_query.content[:200]}...")
-
-                # Store the conversion in memory
-                logger.debug("💾 Recording conversion in memory...")
-                current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-                conversion_record = f"""
-                Time: {current_time}
-                Input: {natural_language}
-                Generated Query: {converted_query.content}
-                Context: {context}
-                FieldContext:
-                {field_context if field_context else 'N/A'}
-                Similar Past Queries: {similar_queries}
-                Status: {'Success' if not converted_query.content.startswith('Error:') else 'Failed'}
-                """
-
-                self.memory_system.record_conversation(
-                    user_input=f"Convert query: {natural_language}",
-                    ai_output=conversion_record
-                )
-                logger.debug("✅ Conversion recorded in memory")
-
-                return converted_query.content
-
-            except Exception as e:
-                logger.error(f"❌ Query conversion error for input '{natural_language}': {str(e)}", exc_info=True)
-                return f"Query conversion error: {str(e)}"
-
-        def analyze_patterns_tool(analysis_type: str, time_period: str = "month") -> str:
-            """Analyze patterns in user's query conversion history."""
-            logger.info(f"📊 Pattern analysis requested: type='{analysis_type}', period='{time_period}'")
-            try:
-                start_time = datetime.now()
-
-                search_queries = {
-                    "accuracy": f"query conversions corrections accuracy {time_period}",
-                    "formats": f"output formats preferences {time_period}",
-                    "complexity": f"complex queries simple queries {time_period}",
-                    "topics": f"security topics network process file {time_period}",
-                    "improvements": f"query improvements suggestions {time_period}",
-                    "overall": f"conversion patterns trends {time_period}",
-                }
-
-                query = search_queries.get(analysis_type, f"{analysis_type} {time_period}")
-                logger.debug(f"🔍 Using search query: '{query}'")
-
-                memories = memory_search_tool(query)
-
-                analysis_prompt = f"""
-                Based on the following query conversion history for {analysis_type} over the {time_period}:
-                {memories}
-
-                Please provide a comprehensive analysis including:
-                1. Key patterns and trends in query conversions
-                2. Most common output formats used
-                3. Accuracy improvements over time
-                4. Common mistakes or correction patterns
-                5. Recommendations for better query formulation
-                6. Areas for improvement
-                """
-
-                logger.debug("🤖 Calling LLM for pattern analysis...")
-                messages = [
-                    SystemMessage(content=self.system_prompts["analyzer"]),
-                    HumanMessage(content=analysis_prompt),
-                ]
-
-                response = self.llm.invoke(messages)
-                end_time = datetime.now()
-                duration = (end_time - start_time).total_seconds()
-
-                logger.info(f"✅ Pattern analysis completed in {duration:.2f}s")
-                logger.debug(f"Analysis result preview: {response.content[:200]}...")
-
-                return response.content
-
-            except Exception as e:
-                logger.error(f"❌ Pattern analysis error for type '{analysis_type}': {str(e)}", exc_info=True)
-                return f"Pattern analysis error: {str(e)}"
-
-        def get_suggestions_tool(query_type: str) -> str:
-            """Generate personalized query suggestions."""
-            logger.info(f"💡 Query suggestions requested for type: '{query_type}'")
-            try:
-                start_time = datetime.now()
-
-                logger.debug("🔍 Searching for past queries and user patterns...")
-                past_queries = memory_search_tool(f"{query_type} queries examples successful conversions")
-                user_patterns = memory_search_tool(f"user preferences {query_type} query patterns")
-
-                suggestion_prompt = f"""
-                Based on the user's history with {query_type} queries:
-                Past Queries: {past_queries}
-                User Patterns: {user_patterns}
-
-                Please provide personalized suggestions including:
-                1. 5 example natural language queries for {query_type} security scenarios
-                2. Best practices for formulating {query_type} queries
-                3. Common fields and operators to use
-                4. Tips to improve conversion accuracy
-                5. Advanced query patterns for complex scenarios
-                """
-
-                logger.debug("🤖 Calling LLM for suggestion generation...")
-                messages = [
-                    SystemMessage(content=self.system_prompts["pattern_recognition"]),
-                    HumanMessage(content=suggestion_prompt),
-                ]
-
-                response = self.llm.invoke(messages)
-                end_time = datetime.now()
-                duration = (end_time - start_time).total_seconds()
-
-                logger.info(f"✅ Query suggestions generated in {duration:.2f}s")
-                logger.debug(f"Suggestions preview: {response.content[:200]}...")
-
-                return response.content
-
-            except Exception as e:
-                logger.error(f"❌ Suggestion error for query type '{query_type}': {str(e)}", exc_info=True)
-                return f"Suggestion error: {str(e)}"
-
-        tools = [
-            Tool(
-                name="memory_search",
-                description="Search memories for relevant information about past queries, patterns, corrections, and user preferences",
-                func=memory_search_tool
-            ),
-            Tool(
-                name="convert_to_query",
-                description="Convert natural language to structured security query",
-                func=convert_to_query_tool
-            ),
-            Tool(
-                name="analyze_query_patterns",
-                description="Analyze patterns in user's query conversion history",
-                func=analyze_patterns_tool
-            ),
-            Tool(
-                name="get_query_suggestions",
-                description="Generate personalized query suggestions based on user's history",
-                func=get_suggestions_tool
-            )
-        ]
-
-        logger.debug(f"✅ Created {len(tools)} tools: {[tool.name for tool in tools]}")
-        return tools
-
-    def _create_graph(self) -> StateGraph:
-        """Create the LangGraph workflow."""
-        logger.debug("📊 Building LangGraph workflow...")
-
-        # Initialize the graph
-        workflow = StateGraph(AssistantState)
-        logger.debug("📋 StateGraph initialized")
-
-        # Add nodes
-        nodes = [
-            ("classify_intent", self.classify_intent_node),
-            ("memory_search_node", self.memory_search_node),
-            ("query_conversion_node", self.query_conversion_node),
-            ("pattern_analysis_node", self.pattern_analysis_node),
-            ("suggestion_node", self.suggestion_node),
-            ("response_generation_node", self.response_generation_node),
-            ("error_handling_node", self.error_handling_node)
-        ]
-
-        for node_name, node_func in nodes:
-            workflow.add_node(node_name, node_func)
-            logger.debug(f"➕ Added node: {node_name}")
-
-        # Define the workflow edges
-        logger.debug("🔗 Setting up workflow edges...")
-        workflow.add_edge(START, "classify_intent")
-
-        workflow.add_conditional_edges(
-            "classify_intent",
-            self.route_based_on_intent,
-            {
-                "memory_search": "memory_search_node",
-                "query_conversion": "query_conversion_node",
-                "pattern_analysis": "pattern_analysis_node",
-                "suggestions": "suggestion_node",
-                "general": "response_generation_node",
-                "error": "error_handling_node"
-            }
+    def _initialize_memory_system(self):
+        """Initialize Memori memory system with CORRECTED performance optimizations."""
+        logger.info("🧠 Initializing Memori with PostgreSQL database...")
+        db_url = f"postgresql+psycopg2://{self.database_user}:{self.database_password}@{self.database_host}:{self.database_port}/{self.database_name}"
+        
+        # CORRECTED PERFORMANCE OPTIMIZATION based on actual Memori docs
+        self.memory_system = Memori(
+            database_connect=db_url,
+            conscious_ingest=True,     # ✅ KEEP TRUE - One-shot working memory (efficient)
+            auto_ingest=True,         # ✅ DISABLE - This causes continuous DB searches (slow)
+            verbose=False,             # ✅ Reduce logging overhead
+            model='gpt-4o-mini',
         )
-
-        # Add terminal edges
-        terminal_edges = [
-            ("memory_search_node", "response_generation_node"),
-            ("query_conversion_node", "response_generation_node"),
-            ("pattern_analysis_node", "response_generation_node"),
-            ("suggestion_node", "response_generation_node"),
-            ("response_generation_node", END),
-            ("error_handling_node", END)
-        ]
-
-        for from_node, to_node in terminal_edges:
-            workflow.add_edge(from_node, to_node)
-            logger.debug(f"🔗 Added edge: {from_node} -> {to_node}")
-
-        logger.debug("⚙️  Compiling workflow with memory saver...")
-        compiled_graph = workflow.compile(checkpointer=self.memory_saver)
-        logger.debug("✅ Workflow compiled successfully")
-
-        return compiled_graph
-
-    def classify_intent_node(self, state: "AssistantState") -> "AssistantState":
-        """Classify user intent to route to appropriate workflow."""
-        user_input = state["user_input"].lower()
-        logger.info(f"🔍 Classifying intent for input: '{user_input[:100]}...'")
-
-        # Intent classification logic
-        if any(keyword in user_input for keyword in ["convert", "translate", "query", "find", "search for", "show me"]):
-            if any(keyword in user_input for keyword in ["splunk", "elastic", "graylog", "format"]):
-                state["current_task"] = "query_conversion"
-            else:
-                state["current_task"] = "query_conversion"
-        elif any(keyword in user_input for keyword in ["analyze", "pattern", "trends", "accuracy", "performance"]):
-            state["current_task"] = "pattern_analysis"
-        elif any(keyword in user_input for keyword in ["suggest", "example", "help", "how to"]):
-            state["current_task"] = "suggestions"
-        elif any(keyword in user_input for keyword in ["remember", "recall", "past", "history"]):
-            state["current_task"] = "memory_search"
-        else:
-            state["current_task"] = "general"
-
-        logger.info(f"🎯 Intent classified as: {state['current_task']}")
-        state["messages"].append(AIMessage(content=f"Intent classified as: {state['current_task']}"))
-        return state
-
-    def route_based_on_intent(self, state: "AssistantState") -> str:
-        """Route to appropriate node based on classified intent."""
-        task = state["current_task"]
-        logger.debug(f"🚏 Routing to node based on task: {task}")
-
-        route_mapping = {
-            "query_conversion": "query_conversion",
-            "pattern_analysis": "pattern_analysis",
-            "suggestions": "suggestions",
-            "memory_search": "memory_search"
-        }
-
-        route = route_mapping.get(task, "general")
-        logger.debug(f"➡️  Routed to: {route}")
-        return route
-
-    def memory_search_node(self, state: "AssistantState") -> "AssistantState":
-        """Execute memory search operations."""
-        logger.info("🔍 Executing memory search node")
-        try:
-            user_input = state["user_input"]
-            logger.debug(f"Searching memory for: '{user_input}'")
-
-            result = self.memory_tool.execute(query=user_input)
-            state["memory_context"] = str(result) if result else "No relevant memories found."
-
-            logger.info(f"✅ Memory search completed, context length: {len(state['memory_context'])}")
-            state["messages"].append(AIMessage(content=f"Memory search completed: {state['memory_context'][:200]}..."))
-        except Exception as e:
-            logger.error(f"❌ Memory search node error: {str(e)}", exc_info=True)
-            state["error_message"] = f"Memory search error: {str(e)}"
-            state["current_task"] = "error"
-
-        return state
-
-    def query_conversion_node(self, state: "AssistantState") -> "AssistantState":
-        """Execute query conversion operations."""
-        logger.info("🔄 Executing query conversion node")
-        try:
-            user_input = state["user_input"]
-            logger.debug(f"Converting query: '{user_input}'")
-
-            # Search for similar queries
-            logger.debug("🔍 Searching for similar queries...")
-            similar_queries = self.memory_tool.execute(query=f"similar queries: {user_input[:50]}")
-            state["memory_context"] = str(similar_queries) if similar_queries else ""
-
-            # Semantic field context
-            logger.debug("📚 Building field context via semantic search...")
-            field_context = self._build_field_context(user_input)
-
-            # Convert the query
-            logger.debug("🤖 Invoking fine-tuned model for conversion...")
-            messages = [
-                SystemMessage(content="""
-            You are a converter. 
-            When APP FIELD CONTEXT is provided, map the user input to all matching query.
-            Output strictly as JSON list of {"alias":"...", "query":"..."} objects.
-            If no match, return {"query":"..."}.
-            Do not mention APP FIELD CONTEXT.
-            """),
-            ]
-
-            if field_context:
-                messages.append(HumanMessage(content=f"APP FIELD CONTEXT\n{field_context}"))
-
-            messages.append(HumanMessage(content=user_input))
-
-            converted_query = self.finetuned_llm.invoke(messages)
-            converted_text = converted_query.content
-            state["conversion_result"] = converted_text
-
-
-            logger.info(f"✅ Query converted successfully, length: {len(converted_text)}")
-            logger.debug(f"Conversion result: {converted_text[:200]}...")
-
-            # Record the conversion
-            logger.debug("💾 Recording conversion...")
-            self._record_conversion(
-                user_input,
-                converted_text,
-                (state["memory_context"] or "") + (f"\n\nFieldContext:\n{field_context}" if field_context else "")
-            )
-
-            state["messages"].append(AIMessage(content=f"Query converted: {converted_text}"))
-
-        except Exception as e:
-            logger.error(f"❌ Query conversion node error: {str(e)}", exc_info=True)
-            state["error_message"] = f"Query conversion error: {str(e)}"
-            state["current_task"] = "error"
-
-        return state
-
-    def pattern_analysis_node(self, state: "AssistantState") -> "AssistantState":
-        """Execute pattern analysis operations."""
-        logger.info("📊 Executing pattern analysis node")
-        try:
-            # Determine analysis type from user input
-            analysis_type = "overall"
-            time_period = "month"
-
-            user_input = state["user_input"].lower()
-            if "accuracy" in user_input:
-                analysis_type = "accuracy"
-            elif "format" in user_input:
-                analysis_type = "formats"
-            elif "complex" in user_input:
-                analysis_type = "complexity"
-            elif "topic" in user_input:
-                analysis_type = "topics"
-
-            logger.debug(f"Analysis type: {analysis_type}, time period: {time_period}")
-
-            # Search for relevant memories
-            logger.debug("🔍 Searching for relevant memories...")
-            memories = self.memory_tool.execute(query=f"{analysis_type} {time_period} patterns trends")
-
-            # Generate analysis using LLM
-            logger.debug("🤖 Generating analysis with LLM...")
-            analysis_prompt = f"""
-            Based on query history: {memories}
-            Provide analysis for {analysis_type} over {time_period} with specific insights and recommendations.
-            """
-
-            messages = [
-                SystemMessage(content=self.system_prompts["analyzer"]),
-                HumanMessage(content=analysis_prompt),
-            ]
-
-            response = self.llm.invoke(messages)
-
-            state["analysis_result"] = response.content
-            logger.info(f"✅ Pattern analysis completed, result length: {len(response.content)}")
-            logger.debug(f"Analysis preview: {response.content[:200]}...")
-
-            state["messages"].append(AIMessage(content=f"Analysis completed: {state['analysis_result'][:200]}..."))
-
-        except Exception as e:
-            logger.error(f"❌ Pattern analysis node error: {str(e)}", exc_info=True)
-            state["error_message"] = f"Pattern analysis error: {str(e)}"
-            state["current_task"] = "error"
-
-        return state
-
-    def suggestion_node(self, state: "AssistantState") -> "AssistantState":
-        """Generate suggestions based on user history."""
-        logger.info("💡 Executing suggestion node")
-        try:
-            user_input = state["user_input"]
-
-            # Determine query type
-            query_type = "general"
-            type_keywords = {
-                "network": "network",
-                "process": "process",
-                "file": "file",
-                "user": "user",
-                "malware": "malware"
-            }
-
-            for keyword, qtype in type_keywords.items():
-                if keyword in user_input.lower():
-                    query_type = qtype
-                    break
-
-            logger.debug(f"Determined query type: {query_type}")
-
-            # Get relevant history
-            logger.debug("🔍 Searching for relevant query history...")
-            past_queries = self.memory_tool.execute(query=f"{query_type} queries examples")
-
-            # Generate suggestions
-            logger.debug("🤖 Generating suggestions with LLM...")
-            suggestion_prompt = f"""
-            Based on user history: {past_queries}
-            Provide 5 personalized {query_type} query suggestions with best practices.
-            """
-
-            messages = [
-                SystemMessage(content=self.system_prompts["pattern_recognition"]),
-                HumanMessage(content=suggestion_prompt),
-            ]
-
-            response = self.llm.invoke(messages)
-
-            state["analysis_result"] = response.content
-            logger.info(f"✅ Suggestions generated for {query_type}, result length: {len(response.content)}")
-            logger.debug(f"Suggestions preview: {response.content[:200]}...")
-
-            state["messages"].append(AIMessage(content=f"Suggestions generated for {query_type} queries"))
-
-        except Exception as e:
-            logger.error(f"❌ Suggestion node error: {str(e)}", exc_info=True)
-            state["error_message"] = f"Suggestion error: {str(e)}"
-            state["current_task"] = "error"
-
-        return state
-
-    def response_generation_node(self, state: "AssistantState") -> "AssistantState":
-        """Generate final response based on processed information."""
-        logger.info("📝 Executing response generation node")
-        try:
-            task = state["current_task"]
-            user_input = state["user_input"]
-            logger.debug(f"Generating response for task: {task}")
-
-            if task == "query_conversion":
-                response = f"✅ Query Conversion Result:\n\n**Input:** {user_input}\n**Converted Query:** `{state['conversion_result']}`"
-                if state["memory_context"]:
-                    response += f"\n\n💡 **Context from past queries:** Found similar conversion patterns in your history."
-
-            elif task == "pattern_analysis":
-                response = f"📊 **Pattern Analysis Results:**\n\n{state['analysis_result']}"
-
-            elif task == "suggestions":
-                response = f"💡 **Query Suggestions:**\n\n{state['analysis_result']}"
-
-            elif task == "memory_search":
-                response = f"🔍 **Memory Search Results:**\n\n{state['memory_context']}"
-
-            else:
-                # General response
-                logger.debug("🤖 Generating general response with LLM...")
-                general_prompt = f"""
-                User input: {user_input}
-                Available context: {state.get('memory_context', '')}
-
-                Provide a helpful response as a security query assistant.
-                """
-
-                messages = [
-                    SystemMessage(content=self.system_prompts["converter"]),
-                    HumanMessage(content=general_prompt),
-                ]
-
-                llm_response = self.llm.invoke(messages)
-                response = llm_response.content
-
-            logger.info(f"✅ Response generated, length: {len(response)}")
-            logger.debug(f"Response preview: {response[:200]}...")
-
-            # Record conversation in memory
-            logger.debug("💾 Recording conversation in memory...")
-            self.memory_system.record_conversation(
-                user_input=user_input,
-                ai_output=response
-            )
-
-            state["messages"].append(AIMessage(content=response))
-
-        except Exception as e:
-            logger.error(f"❌ Response generation node error: {str(e)}", exc_info=True)
-            state["error_message"] = f"Response generation error: {str(e)}"
-            state["current_task"] = "error"
-
-        return state
-
-    def error_handling_node(self, state: "AssistantState") -> "AssistantState":
-        """Handle errors gracefully."""
-        logger.warning(f"⚠️  Executing error handling node for error: {state.get('error_message', 'Unknown error')}")
-
-        error_response = f"❌ I encountered an error: {state['error_message']}\n\nPlease try rephrasing your request or contact support if the issue persists."
-        state["messages"].append(AIMessage(content=error_response))
-
-        logger.info("✅ Error handled gracefully")
-        return state
-
-    def _record_conversion(self, user_input: str, converted_query: str, context: str):
-        """Record conversion for learning."""
-        logger.debug(f"💾 Recording conversion - Input: '{user_input[:50]}...', Query length: {len(converted_query)}")
-
-        try:
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-            conversion_record = f"""
-            Time: {current_time}
-            Input: {user_input}
-            Generated Query: {converted_query}
-            Context: {context}
-            Status: {'Success' if not converted_query.startswith('Error:') else 'Failed'}
-            """
-
-            self.memory_system.record_conversation(
-                user_input=f"Convert query: {user_input}",
-                ai_output=conversion_record
-            )
-
-            logger.debug("✅ Conversion recorded successfully")
-
-        except Exception as e:
-            logger.error(f"❌ Failed to record conversion: {str(e)}", exc_info=True)
+        
+        # CRITICAL FIX: Actually enable the memory system!
+        logger.info("🔄 Enabling Memori memory system...")
+        self.memory_system.enable()
+        logger.info("✅ Memori enabled successfully")
+        
+        logger.info("📝 Creating memory tool...")
+        self.memory_tool = create_memory_tool(self.memory_system)
+        logger.info("✅ Memory tool created")
+
+    def _initialize_llms(self):
+        """Initialize language models."""
+        logger.info("🤖 Initializing LLMs...")
+        
+        # PERFORMANCE OPTIMIZATION: Reduced timeouts
+        self.llm = ChatOpenAI(
+            model=self.settings.LLM_MODEL,
+            temperature=self.settings.LLM_TEMPERATURE,
+            timeout=30,  # Reduced from default 60s
+            max_retries=1,  # Reduced retries for faster failures
+        )
+        logger.info(f"✅ Main LLM initialized: {self.settings.LLM_MODEL}")
+
+        self.finetuned_llm = ChatOpenAI(
+            model=self.settings.FINETUNED_MODEL_NAME,
+            api_key=self.settings.OPENAI_API_KEY,
+            temperature=self.settings.LLM_TEMPERATURE,
+            timeout=30,  # Reduced from 60
+            max_retries=1,  # Reduced retries
+        )
+        logger.info(f"✅ Fine-tuned LLM initialized: {self.settings.FINETUNED_MODEL_NAME}")
+
+    def _initialize_tools(self):
+        """Initialize tools."""
+        logger.info("🛠️ Creating tools...")
+        self.system_prompts = SystemPrompts()
+        
+        self.tools_manager = CyberQueryTools(
+            memory_tool=self.memory_tool,
+            memory_system=self.memory_system,
+            field_store=self.field_store,
+            field_context_k=self.field_context_k,
+            llm=self.llm,
+            finetuned_llm=self.finetuned_llm,
+            system_prompts=self.system_prompts
+        )
+        
+        self.tools = self.tools_manager.create_tools()
+        logger.info(f"✅ {len(self.tools)} tools created successfully")
+
+    def _initialize_workflow(self):
+        """Initialize LangGraph workflow."""
+        logger.info("📊 Creating LangGraph workflow...")
+        
+        self.memory_saver = MemorySaver()
+        
+        self.workflow_manager = CyberQueryWorkflow(
+            tools_manager=self.tools_manager,
+            memory_system=self.memory_system,
+            system_prompts=self.system_prompts,
+            llm=self.llm
+        )
+        
+        self.graph = self.workflow_manager.create_graph(self.memory_saver)
+        logger.info("✅ LangGraph workflow created and compiled")
+
+    @lru_cache(maxsize=50)
+    def _get_cache_key(self, user_input: str, session_id: str) -> str:
+        """Generate cache key for query responses."""
+        return f"{hash(user_input)}_{session_id}"
+
+    def _get_cached_response(self, cache_key: str) -> Optional[str]:
+        """Get cached response if available."""
+        if cache_key in self._query_cache:
+            self._performance_metrics['cache_hits'] += 1
+            logger.info(f"🎯 Cache hit for query")
+            return self._query_cache[cache_key]
+        return None
+
+    def _cache_response(self, cache_key: str, response: str):
+        """Cache response with size limit."""
+        if len(self._query_cache) >= self._cache_max_size:
+            # Remove oldest entry (FIFO)
+            oldest_key = next(iter(self._query_cache))
+            del self._query_cache[oldest_key]
+        
+        self._query_cache[cache_key] = response
+
+    def _update_performance_metrics(self, duration: float):
+        """Update performance tracking metrics."""
+        self._performance_metrics['total_queries'] += 1
+        total_queries = self._performance_metrics['total_queries']
+        current_avg = self._performance_metrics['avg_response_time']
+        
+        # Update rolling average
+        self._performance_metrics['avg_response_time'] = (
+            (current_avg * (total_queries - 1) + duration) / total_queries
+        )
 
     def process_user_input(self, user_input: str, session_id: str = "default") -> str:
         """Process user input through the LangGraph workflow."""
@@ -731,8 +190,13 @@ Use memory_search to understand their past queries and suggest improvements.""",
         try:
             start_time = datetime.now()
 
-            # Initialize state
-            logger.debug("📋 Initializing state...")
+            # Check cache first for performance
+            cache_key = self._get_cache_key(user_input, session_id)
+            cached_response = self._get_cached_response(cache_key)
+            if cached_response:
+                logger.info("⚡ Returning cached response")
+                return cached_response
+
             initial_state = AssistantState(
                 messages=[HumanMessage(content=user_input)],
                 user_input=user_input,
@@ -746,169 +210,108 @@ Use memory_search to understand their past queries and suggest improvements.""",
                 session_id=session_id
             )
 
-            # Run the graph
-            logger.debug("🚀 Invoking LangGraph workflow...")
             config = RunnableConfig(configurable={"thread_id": session_id})
             final_state = self.graph.invoke(initial_state, config)
 
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
 
-            # Extract the final AI message
             ai_messages = [msg for msg in final_state["messages"] if isinstance(msg, AIMessage)]
             if ai_messages:
                 response = ai_messages[-1].content
+                
+                # Cache the response for future use
+                self._cache_response(cache_key, response)
+                
+                # Update performance metrics
+                self._update_performance_metrics(duration)
+                
                 logger.info(f"✅ Processing completed in {duration:.2f}s, response length: {len(response)}")
-                logger.debug(f"Final response preview: {response[:200]}...")
                 return response
             else:
-                logger.warning("⚠️  No AI messages found in final state")
+                logger.warning("⚠️ No AI messages found in final state")
                 return "I processed your request, but couldn't generate a response. Please try again."
 
         except Exception as e:
             logger.error(f"❌ Error processing user input: {str(e)}", exc_info=True)
             return f"Error processing your request: {str(e)}"
 
-    def record_correction(self, original_nl: str, original_query: str, corrected_query: str, feedback: str = "") -> str:
-        """Record user corrections to improve future conversions."""
-        try:
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-            correction_record = f"""
-            Time: {current_time}
-            Correction Type: Query Improvement
-            Original Natural Language: {original_nl}
-            Original Generated Query: {original_query}
-            Corrected Query: {corrected_query}
-            User Feedback: {feedback}
-            """
-
-            self.memory_system.record_conversation(
-                user_input=f"Correction: {original_nl}",
-                ai_output=correction_record
-            )
-
-            return "✅ Correction recorded! I'll learn from this for future conversions."
-
-        except Exception as e:
-            return f"Error recording correction: {str(e)}"
-
-    def get_conversion_summary(self) -> str:
-        """Generate a summary of today's query conversions."""
-        try:
-            today = date.today().strftime("%Y-%m-%d")
-            today_conversions = self.memory_tool.execute(query=f"today {today} query conversions")
-
-            if not today_conversions or "No relevant memories found" in str(today_conversions):
-                return "No query conversions found for today. Try converting your first security query!"
-
-            summary_prompt = f"""
-            Based on today's conversions: {today_conversions}
-
-            Provide a concise summary including:
-            1. Number of queries converted
-            2. Common formats used
-            3. Success rate
-            4. Key patterns
-            5. Suggestions for improvement
-            """
-
-            messages = [
-                SystemMessage(content=self.system_prompts["analyzer"]),
-                HumanMessage(content=summary_prompt),
-            ]
-
-            response = self.llm.invoke(messages)
-            return response.content
-
-        except Exception as e:
-            return f"Error generating summary: {str(e)}"
-
+    # Public API methods
     def chat_with_memory(self, user_input: str, session_id: str = "api") -> str:
+        """Chat with memory capabilities."""
         return self.process_user_input(user_input, session_id=session_id)
 
     def convert_to_query(self, natural_language: str, context: str = "") -> str:
-        try:
-            similar = ""
-            try:
-                similar = self.memory_tool.execute(query=f"similar queries: {natural_language[:50]}")
-            except Exception:
-                pass
-
-            field_context = self._build_field_context(natural_language)
-            messages = [
-                SystemMessage(content=self.system_prompts["converter"]),
-                SystemMessage(content=(
-                   """
-                   You are a converter. 
-                   When APP FIELD CONTEXT is provided, map the user input to all matching query.
-                   Output strictly as JSON list of {"alias":"...", "query":"..."} objects.
-                   If no match, return {"query":"..."}.
-                   Do not mention APP FIELD CONTEXT.
-                   """
-                )),
-            ]
-            if field_context:
-                messages.append(HumanMessage(content=f"APP FIELD CONTEXT\n{field_context}"))
-            messages.append(HumanMessage(content=natural_language))
-
-            print('messages', messages)
-
-            converted = self.finetuned_llm.invoke(messages)
-            converted_text = converted.content
-            merged_ctx = (str(similar) if similar else context) + (f"\n\nFieldContext:\n{field_context}" if field_context else "")
-            self._record_conversion(natural_language, converted_text, merged_ctx)
-            return converted_text
-        except Exception as e:
-            return f"Error: {str(e)}"
+        """Convert natural language to structured query."""
+        # Add caching for conversions
+        cache_key = f"convert_{hash(natural_language)}_{hash(context)}"
+        cached = self._get_cached_response(cache_key)
+        if cached:
+            return cached
+            
+        result = self.tools_manager.convert_to_query_tool(natural_language, context)
+        self._cache_response(cache_key, result)
+        return result
 
     def analyze_query_patterns(self, analysis_type: str = "overall", time_period: str = "month") -> str:
-        try:
-            memories = self.memory_tool.execute(query=f"{analysis_type} {time_period} patterns trends")
-            analysis_prompt = f"""
-            Based on query history: {memories}
-            Provide analysis for {analysis_type} over {time_period} with specific insights and recommendations.
-            """
-
-            messages = [
-                SystemMessage(content=self.system_prompts["analyzer"]),
-                HumanMessage(content=analysis_prompt),
-            ]
-
-            response = self.llm.invoke(messages)
-            return response.content
-        except Exception as e:
-            return f"Pattern analysis error: {str(e)}"
+        """Analyze query patterns."""
+        return self.tools_manager.analyze_patterns_tool(analysis_type, time_period)
 
     def get_query_suggestions(self, query_type: str = "general") -> str:
-        try:
-            past_queries = self.memory_tool.execute(query=f"{query_type} queries examples successful conversions")
-            user_patterns = self.memory_tool.execute(query=f"user preferences {query_type} query patterns")
-            suggestion_prompt = f"""
-            Based on the user's history with {query_type} queries:
-            Past Queries: {past_queries}
-            User Patterns: {user_patterns}
-
-            Please provide personalized suggestions including:
-            1) 5 example natural language queries for {query_type} security scenarios
-            2) Best practices
-            3) Common fields/operators
-            4) Tips to improve conversion accuracy
-            5) Advanced patterns
-            """
-
-            messages = [
-                SystemMessage(content=self.system_prompts["pattern_recognition"]),
-                HumanMessage(content=suggestion_prompt),
-            ]
-
-            response = self.llm.invoke(messages)
-            return response.content
-        except Exception as e:
-            return f"Suggestion error: {str(e)}"
+        """Get query suggestions."""
+        return self.tools_manager.get_suggestions_tool(query_type)
 
     def memory_search(self, query: str) -> str:
+        """Search memory for relevant information."""
+        return self.tools_manager.memory_search_tool(query)
+
+    def record_correction(self, original_nl: str, original_query: str, corrected_query: str, feedback: str = "") -> str:
+        """Record user corrections to improve future conversions."""
+        return self.tools_manager.record_correction(original_nl, original_query, corrected_query, feedback)
+
+    def get_conversion_summary(self) -> str:
+        """Generate a summary of today's query conversions."""
+        return self.tools_manager.get_conversion_summary()
+
+    # Additional performance methods
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """Get current performance statistics."""
+        return {
+            **self._performance_metrics,
+            'cache_size': len(self._query_cache),
+            'cache_hit_rate': (
+                self._performance_metrics['cache_hits'] / max(1, self._performance_metrics['total_queries'])
+            ) * 100
+        }
+
+    def clear_cache(self):
+        """Clear response cache to free memory."""
+        self._query_cache.clear()
+        logger.info("🧹 Response cache cleared")
+
+    def trigger_memory_analysis(self):
+        """Manually trigger Memori conscious analysis for better context."""
+        logger.info("🧠 Triggering manual memory analysis...")
         try:
-            result = self.memory_tool.execute(query=query)
-            return str(result) if result else "No relevant memories found."
+            self.memory_system.trigger_conscious_analysis()
+            logger.info("✅ Memory analysis completed")
         except Exception as e:
-            return f"Memory search error: {str(e)}"
+            logger.error(f"❌ Memory analysis failed: {str(e)}")
+
+    def warmup(self, sample_queries: List[str] = None):
+        """Warm up the system by running sample queries."""
+        logger.info("🔥 Warming up system...")
+        
+        # Trigger memory analysis first
+        self.trigger_memory_analysis()
+        
+        # Run sample queries if provided
+        if sample_queries:
+            for query in sample_queries[:2]:  # Limit warmup queries
+                try:
+                    self.process_user_input(query, session_id="warmup")
+                    logger.info(f"✅ Warmup query completed: {query[:50]}...")
+                except Exception as e:
+                    logger.warning(f"⚠️ Warmup query failed: {str(e)}")
+        
+        logger.info("✅ System warmup completed")

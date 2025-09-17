@@ -27,8 +27,19 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add middleware
-app.add_middleware(CORSMiddleware, allow_origins=["*"])
+
+
+origins = [
+    "http://localhost:8083",  # your frontend
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,          # only allow this origin
+    allow_credentials=True,         # needed if you send cookies/auth
+    allow_methods=["*"],            # allow all HTTP methods
+    allow_headers=["*"],            # allow all request headers
+)
 
 # Include routers
 app.include_router(api.router, prefix="/api", tags=["API"])
