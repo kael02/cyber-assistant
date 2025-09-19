@@ -19,19 +19,17 @@ async def convert_query(
     """Convert natural language to structured security query with session memory."""
     try:
         # Use the session-aware workflow instead of direct tool call
-        full_input = f"Convert this query: {request.natural_language}"
-        if request.context:
-            full_input += f" Context: {request.context}"
+        full_input = request.natural_language
             
         # This will use the full workflow including memory search and session state
-        response = assistant.process_user_input(
-            user_input=full_input,
+        response = assistant.convert_to_query(
+            natural_language=full_input,
+            context=request.context,
             session_id=request.session_id
         )
         
         # Extract the converted query from the response
         # The response format from response_generation_node includes the converted query
-        success = not response.startswith("❌")
         
         # Try to get memory context for this session
         memory_context = None
@@ -43,10 +41,11 @@ async def convert_query(
             logger.warning(f"Could not retrieve memory context: {e}")
         
         return ConversionResponse(
-            success=success,
-            converted_query=response,
+            success=response["success"],
+            converted_query=response["response"],
+            is_query=response["task_type"] == "conversion",
             memory_context=memory_context,
-            error=None if success else response
+            error=None if response["success"] else response["response"]
         )
         
     except Exception as e:
@@ -63,13 +62,14 @@ async def convert_query_stream_sse(
     
     async def stream_sse() -> AsyncGenerator[str, None]:
         try:
-            converted_query = assistant.convert_to_query(
+            response = assistant.convert_to_query(
                 natural_language=request.natural_language,
-                context=request.context
+                context=request.context,
+                session_id=request.session_id
             )
             
             # Stream word by word
-            words = converted_query.split()
+            words = response["response"].split()
             accumulated = ""
             
             for word in words:
@@ -78,11 +78,15 @@ async def convert_query_stream_sse(
                 accumulated += word
                 
                 yield f"data: {json.dumps({'query': accumulated})}\n\n"
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.05)
                 
-            # Send completion event
-            yield f"data: {json.dumps({'complete': True, 'final_query': converted_query})}\n\n"
-                
+            final_data = {
+                'complete': True,
+                'success': response['success'],
+                'final_query': response['response']
+            }
+            yield f"data: {json.dumps(final_data)}\n\n"
+      
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
     

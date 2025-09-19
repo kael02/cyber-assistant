@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     LOG_TO_CONSOLE: bool = True
     LOG_TO_FILE: bool = False
     
+    WHITELISTED_IPS: List[str] = []
+
     @field_validator('LOG_LEVEL')
     def validate_log_level(cls, v):
         valid_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']

@@ -10,6 +10,7 @@ class ConversionResponse(BaseModel):
     converted_query: str
     memory_context: Optional[str] = None
     error: Optional[str] = None
+    is_query: bool = False
 
 class ChatResponse(BaseModel):
     response: str
@@ -23,6 +24,9 @@ class StandardResponse(BaseModel):
     error: Optional[str] = None
 
 
+def last_write(prev, new):
+    # reducer: pick the latest value
+    return new if new is not None else prev
 
 class AssistantState(TypedDict):
     """State definition for the Cyber Query Assistant workflow."""

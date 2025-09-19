@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from routers import api, memory, batch, admin, document_ingestor
 from services import CyberQueryAssistant
-from config import logger
+from config import logger, settings
 from services.document_ingestor import DocumentIngestor
 
 # Global assistant instance     
@@ -29,9 +29,7 @@ app = FastAPI(
 
 
 
-origins = [
-    "http://localhost:8083",  # your frontend
-]
+origins = settings.WHITELISTED_IPS
 
 app.add_middleware(
     CORSMiddleware,
@@ -64,7 +62,7 @@ async def root():
             "correction": "/api/correction",
             "summary": "/api/summary",
             "process": "/api/process",
-            "document-ingester": "/api/document-ingester"
+            "document-ingestor": "/api/document-ingestor"
         }
     }
 
