@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 import threading
 import re
+from datetime import datetime
 
 from config import logger
 
@@ -293,15 +294,20 @@ class CyberQueryTools:
             continuation_info = self._detect_continuation_intent(natural_language, conversation_history or [])
 
             # Enhanced system prompt with integrated relevance checking
-            system_prompt = """You are an expert security query translator with advanced conversational context awareness.
+            system_prompt = f"""You are an expert security query translator with advanced conversational context awareness.
 
     RELEVANCE CHECK: First determine if the input is relevant to security query conversion:
     - Relevant: security logs, network analysis, malware detection, user authentication, file monitoring, process analysis, threat hunting, incident response
     - Not relevant: other topics like weather, cooking, personal life, general knowledge unrelated to security, math problems, entertainment
 
-    If the input is NOT relevant to security queries, respond with: "OUT_OF_SCOPE: I'm specialized in security query conversions. I can help with converting natural language to security queries, analyzing logs, and security-related tasks. How can I assist with your security queries?"
+    If the input is NOT relevant to security queries, respond with JSON: {{"error": "OUT_OF_SCOPE", "message": "I'm specialized in security query conversions. I can help with converting natural language to security queries, analyzing logs, and security-related tasks. How can I assist with your security queries?"}}
 
-    If the input IS relevant, proceed with conversion:
+    If the input IS relevant, proceed with conversion and respond with JSON in this exact format:
+    {{
+        "query": "your_structured_query_here",
+        "from": epoch_timestamp_or_null,
+        "to": epoch_timestamp_or_null
+    }}
 
     KEY CAPABILITIES:
     1. Convert natural language to structured Graylog queries
@@ -315,6 +321,13 @@ class CyberQueryTools:
     - For continuations, combine with previous query using appropriate logical operators
     - Use proper syntax for the target query language
     - Ensure all conditions are properly formatted
+
+
+    TIME HANDLING:
+    - When time constraint information is provided, calculate the epoch timestamps and use the format: timestamp:[FROM_EPOCH TO TO_EPOCH]
+    - Only add time constraints when explicit time information is provided in the TIME CONSTRAINT DETECTED section
+    - Use the exact epoch timestamps provided - do not modify them
+    - Current time is: {int(datetime.now().timestamp())}
     """
             
             if conv_context:

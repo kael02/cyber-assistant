@@ -62,14 +62,47 @@ async def convert_query_stream_sse(
     
     async def stream_sse() -> AsyncGenerator[str, None]:
         try:
+            # Get the full response from the assistant
             response = assistant.convert_to_query(
                 natural_language=request.natural_language,
                 context=request.context,
                 session_id=request.session_id
             )
             
-            # Stream word by word
-            words = response["response"].split()
+            # Parse the response to extract query, from, and to
+            parsed_result = None
+            query_text = ""
+            from_timestamp = None
+            to_timestamp = None
+            
+            try:
+                # Try to parse JSON from the response
+                if isinstance(response, dict) and "response" in response:
+                    response_content = response["response"]
+                else:
+                    response_content = str(response)
+                
+                # Attempt to parse JSON from the response content
+                import json
+                parsed_result = json.loads(response_content)
+                
+                if isinstance(parsed_result, dict):
+                    query_text = parsed_result.get("query", response_content)
+                    from_timestamp = parsed_result.get("from")
+                    to_timestamp = parsed_result.get("to")
+                else:
+                    # If not a dict, treat the whole response as query
+                    query_text = response_content
+                    
+            except (json.JSONDecodeError, AttributeError):
+                # If JSON parsing fails, treat the entire response as query text
+                if isinstance(response, dict) and "response" in response:
+                    query_text = response["response"]
+                else:
+                    query_text = str(response)
+            
+            # Stream the query text word by word
+            words = query_text.split()
             accumulated = ""
             
             for word in words:
@@ -77,14 +110,25 @@ async def convert_query_stream_sse(
                     accumulated += " "
                 accumulated += word
                 
+                # Stream only the query part
                 yield f"data: {json.dumps({'query': accumulated})}\n\n"
                 await asyncio.sleep(0.05)
                 
+            # Send final result with complete data including from/to timestamps
             final_data = {
                 'complete': True,
-                'success': response['success'],
-                'final_query': response['response']
+                'success': response.get('success', True) if isinstance(response, dict) else True,
+                'final_query': query_text,
+                'from': from_timestamp,
+                'to': to_timestamp
             }
+            
+            # Only include timestamps if they exist
+            if from_timestamp is None:
+                final_data.pop('from', None)
+            if to_timestamp is None:
+                final_data.pop('to', None)
+                
             yield f"data: {json.dumps(final_data)}\n\n"
       
         except Exception as e:
@@ -98,6 +142,8 @@ async def convert_query_stream_sse(
             "Connection": "keep-alive",
         }
     )
+
+
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat_with_memory(

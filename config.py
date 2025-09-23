@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: List[str] = ["*"]
     
+    OPENROUTER_API_KEY: str = ""
+
+    OPENROUTER_PRIMARY_MODEL: str = ""  
+    OPENROUTER_SECONDARY_MODEL: str = ""        
+    OPENROUTER_FALLBACK_MODEL: str = "" 
+
+    # Keep OpenAI models as options but not primary
+    OPENROUTER_AVAILABLE_MODELS: List[str] = ["*"]
+
     # Logging Settings
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

@@ -5,7 +5,7 @@ from functools import lru_cache
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI  
 from memori import ConfigManager, Memori, create_memory_tool
 
 from config import get_settings, logger
@@ -18,11 +18,11 @@ from memory_system import MemoryManager
 
 
 class CyberQueryAssistant:
-    """LangGraph-based Cyber Query Assistant - WORKFLOW-ONLY ARCHITECTURE."""
+    """LangGraph-based Cyber Query Assistant - WORKFLOW-ONLY ARCHITECTURE with OpenRouter."""
 
     def __init__(self):
-        """Initialize with workflow-centric design."""
-        logger.info("🚀 Starting workflow-only initialization...")
+        """Initialize with workflow-centric design using OpenRouter."""
+        logger.info("🚀 Starting workflow-only initialization with OpenRouter...")
 
         try:
             # Core settings only
@@ -42,7 +42,7 @@ class CyberQueryAssistant:
             self._cache = {}
             self._max_cache_size = 50
 
-            logger.info("✅ Workflow-only initialization completed")
+            logger.info("✅ Workflow-only initialization with OpenRouter completed")
 
         except Exception as e:
             logger.error(f"❌ Initialization failed: {str(e)}", exc_info=True)
@@ -60,40 +60,73 @@ class CyberQueryAssistant:
         """Initialize memory system with optimized settings."""
         logger.info("🧠 Initializing optimized Memori...")
         
+        # Use OpenRouter model for memory system if specified
+        memory_model = getattr(self.settings, 'OPENROUTER_MEMORY_MODEL', 'openai/gpt-4o-mini')
+        
         self.memory_system = Memori(
             database_connect=self._db_url,
             conscious_ingest=True,
             auto_ingest=False,  # Disabled for performance
             verbose=False,
-            model='gpt-4o-mini',
+            model=memory_model,
+            # Add OpenRouter config for Memori if it supports it
+            **self._get_openrouter_config_for_memori()
         )
         
         self.memory_system.enable()
         self.memory_tool = create_memory_tool(self.memory_system)
-        logger.info("✅ Memory system ready")
+        logger.info("✅ Memory system ready with OpenRouter")
+
+    def _get_openrouter_config_for_memori(self) -> Dict[str, Any]:
+        """Get OpenRouter configuration for Memori if supported."""
+        config = {}
+        
+        # Check if Memori supports OpenRouter configuration
+        if hasattr(self.settings, 'OPENROUTER_API_KEY'):
+            # Some versions of Memori might support custom API configurations
+            config.update({
+                'api_key': self.settings.OPENROUTER_API_KEY,
+                'base_url': getattr(self.settings, 'OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1')
+            })
+        
+        return config
 
     def _initialize_llms(self):
-        """Initialize LLMs with optimized settings."""
-        logger.info("🤖 Initializing LLMs...")
+        """Initialize LLMs with OpenRouter configuration."""
+        logger.info("🤖 Initializing LLMs with OpenRouter...")
         
-        base_config = {
+        # OpenRouter configuration
+        openrouter_config = {
+            "openai_api_key": self.settings.OPENROUTER_API_KEY,
+            "openai_api_base": getattr(self.settings, 'OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
             "temperature": self.settings.LLM_TEMPERATURE,
             "timeout": 20,
             "max_retries": 1,
         }
         
+        # Add custom headers for OpenRouter
+        headers = {
+            "HTTP-Referer": getattr(self.settings, 'OPENROUTER_REFERER', 'https://your-app.com'),
+            "X-Title": getattr(self.settings, 'OPENROUTER_APP_NAME', 'CyberQuery Assistant'),
+        }
+        
+        # Primary LLM with OpenRouter
+        primary_model = getattr(self.settings, 'OPENROUTER_PRIMARY_MODEL', self.settings.LLM_MODEL)
         self.llm = ChatOpenAI(
-            model=self.settings.LLM_MODEL,
-            **base_config
+            model=primary_model,
+            default_headers=headers,
+            **openrouter_config
         )
         
+        # Finetuned/Secondary LLM with OpenRouter
+        secondary_model = getattr(self.settings, 'OPENROUTER_SECONDARY_MODEL', self.settings.FINETUNED_MODEL_NAME)
         self.finetuned_llm = ChatOpenAI(
-            model=self.settings.FINETUNED_MODEL_NAME,
-            api_key=self.settings.OPENAI_API_KEY,
-            **base_config
+            model=secondary_model,
+            default_headers=headers,
+            **openrouter_config
         )
         
-        logger.info("✅ LLMs ready")
+        logger.info(f"✅ LLMs ready with OpenRouter (Primary: {primary_model}, Secondary: {secondary_model})")
 
     def _initialize_workflow(self):
         """Initialize the complete workflow with all components."""
@@ -131,7 +164,7 @@ class CyberQueryAssistant:
             # Create the executable graph
             self._graph = self.workflow_manager.create_graph(self.memory_saver)
             self._workflow_initialized = True
-            logger.info("✅ Complete workflow system ready")
+            logger.info("✅ Complete workflow system ready with OpenRouter")
 
     def _get_from_cache(self, key: str) -> Optional[str]:
         """Simple cache retrieval."""
@@ -169,7 +202,7 @@ class CyberQueryAssistant:
 
     def process_user_input(self, user_input: str, session_id: str = "default") -> str:
         """WORKFLOW-ONLY processing - no direct tool calls."""
-        logger.info(f"🎯 Processing via workflow: {user_input[:50]}... (session: {session_id})")
+        logger.info(f"🎯 Processing via OpenRouter workflow: {user_input[:50]}... (session: {session_id})")
 
         try:
             start_time = datetime.now()
@@ -208,6 +241,7 @@ class CyberQueryAssistant:
             )
             
             final_state = self._graph.invoke(initial_state, config)
+            
             # Extract response from workflow
             ai_messages = [msg for msg in final_state["messages"] if isinstance(msg, AIMessage)]
             if ai_messages:
@@ -218,21 +252,21 @@ class CyberQueryAssistant:
                     "timestamp": datetime.now().isoformat(),
                     "duration": duration,
                     "task_type": final_state["current_task"],
-                    "success": "success" if final_state["current_task"] != "error" else "error"
+                    "success": "success" if final_state["current_task"] != "error" else "error",
+                    "model_provider": "openrouter"
                 }
                 
                 # Cache the response
                 self._add_to_cache(cache_key, response)
                 
-                
-                logger.info(f"✅ Workflow completed in {duration:.2f}s")
+                logger.info(f"✅ OpenRouter workflow completed in {duration:.2f}s")
                 return response
             else:
-                return "I processed your request through the workflow but couldn't generate a response. Please try again."
+                return "I processed your request through the OpenRouter workflow but couldn't generate a response. Please try again."
 
         except Exception as e:
-            logger.error(f"❌ Workflow processing error: {str(e)}", exc_info=True)
-            return "I encountered an error in the workflow. Please try rephrasing your request or contact support."
+            logger.error(f"❌ OpenRouter workflow processing error: {str(e)}", exc_info=True)
+            return "I encountered an error in the OpenRouter workflow. Please try rephrasing your request or contact support."
 
     # SIMPLIFIED API METHODS - All route through workflow
     def chat_with_memory(self, user_input: str, session_id: str = "api") -> str:
@@ -315,7 +349,10 @@ class CyberQueryAssistant:
         return {
             'cache_size': len(self._cache),
             'workflow_initialized': self._workflow_initialized,
-            'memory_system_active': hasattr(self, 'memory_system') and self.memory_system is not None
+            'memory_system_active': hasattr(self, 'memory_system') and self.memory_system is not None,
+            'model_provider': 'openrouter',
+            'primary_model': getattr(self.settings, 'OPENROUTER_PRIMARY_MODEL', 'unknown'),
+            'secondary_model': getattr(self.settings, 'OPENROUTER_SECONDARY_MODEL', 'unknown')
         }
 
     def clear_cache(self):
@@ -334,7 +371,7 @@ class CyberQueryAssistant:
 
     def warmup(self, sample_queries: List[str] = None):
         """Warm up the system."""
-        logger.info("🔥 Warming up workflow...")
+        logger.info("🔥 Warming up OpenRouter workflow...")
         
         # Initialize workflow
         self._initialize_workflow()
@@ -354,4 +391,58 @@ class CyberQueryAssistant:
             except Exception as e:
                 logger.warning(f"⚠️ Warmup failed for query: {str(e)}")
         
-        logger.info("✅ Workflow warmup completed")
+        logger.info("✅ OpenRouter workflow warmup completed")
+
+    def get_available_models(self) -> List[str]:
+        """Get list of available OpenRouter models (if supported by your settings)."""
+        try:
+            # This would depend on your OpenRouter integration
+            # You might want to implement a method to query available models
+            return getattr(self.settings, 'OPENROUTER_AVAILABLE_MODELS', [
+                'openai/gpt-4o',
+                'openai/gpt-4o-mini',
+                'anthropic/claude-3-sonnet',
+                'anthropic/claude-3-haiku',
+                'google/gemini-pro',
+                'meta-llama/llama-3-70b-instruct'
+            ])
+        except Exception as e:
+            logger.error(f"❌ Error getting available models: {str(e)}")
+            return []
+
+    def switch_model(self, model_name: str, model_type: str = "primary") -> bool:
+        """Switch the primary or secondary model dynamically."""
+        try:
+            openrouter_config = {
+                "openai_api_key": self.settings.OPENROUTER_API_KEY,
+                "openai_api_base": getattr(self.settings, 'OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
+                "temperature": self.settings.LLM_TEMPERATURE,
+                "timeout": 20,
+                "max_retries": 1,
+            }
+            
+            headers = {
+                "HTTP-Referer": getattr(self.settings, 'OPENROUTER_REFERER', 'https://your-app.com'),
+                "X-Title": getattr(self.settings, 'OPENROUTER_APP_NAME', 'CyberQuery Assistant'),
+            }
+            
+            new_llm = ChatOpenAI(
+                model=model_name,
+                default_headers=headers,
+                **openrouter_config
+            )
+            
+            if model_type == "primary":
+                self.llm = new_llm
+                logger.info(f"✅ Switched primary model to: {model_name}")
+            else:
+                self.finetuned_llm = new_llm
+                logger.info(f"✅ Switched secondary model to: {model_name}")
+            
+            # Reset workflow to use new models
+            self._workflow_initialized = False
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Model switch failed: {str(e)}")
+            return False
