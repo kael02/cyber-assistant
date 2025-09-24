@@ -68,6 +68,7 @@ async def convert_query_stream_sse(
                 context=request.context,
                 session_id=request.session_id
             )
+
             
             # Parse the response to extract query, from, and to
             parsed_result = None
@@ -78,21 +79,12 @@ async def convert_query_stream_sse(
             try:
                 # Try to parse JSON from the response
                 if isinstance(response, dict) and "response" in response:
-                    response_content = response["response"]
+                    query_text = response["response"]
+                    from_timestamp = response["from_timestamp"]
+                    to_timestamp = response["to_timestamp"]
                 else:
-                    response_content = str(response)
+                    response = str(response)
                 
-                # Attempt to parse JSON from the response content
-                import json
-                parsed_result = json.loads(response_content)
-                
-                if isinstance(parsed_result, dict):
-                    query_text = parsed_result.get("query", response_content)
-                    from_timestamp = parsed_result.get("from")
-                    to_timestamp = parsed_result.get("to")
-                else:
-                    # If not a dict, treat the whole response as query
-                    query_text = response_content
                     
             except (json.JSONDecodeError, AttributeError):
                 # If JSON parsing fails, treat the entire response as query text

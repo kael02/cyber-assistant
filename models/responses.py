@@ -50,6 +50,7 @@ class AssistantState(TypedDict):
     
     # Session management
     session_id: str
+    metadata: Dict[str, Any]
 
 
 class QueryConversionRequest(TypedDict):

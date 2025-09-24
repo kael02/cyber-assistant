@@ -1,5 +1,5 @@
 from datetime import datetime, date
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_core.tools import Tool
 import asyncio
@@ -8,12 +8,49 @@ from functools import lru_cache
 import threading
 import re
 from datetime import datetime
+from pydantic import BaseModel, Field
+from typing_extensions import Annotated, TypedDict
 
 from config import logger
 
 
+# Define structured output schemas
+class QueryConversionSuccess(BaseModel):
+    """Successful security query conversion result."""
+    query: str = Field(description="The converted structured security query")
+    from_timestamp: Optional[int] = Field(default=None, description="Start time as epoch timestamp")
+    to_timestamp: Optional[int] = Field(default=None, description="End time as epoch timestamp")
+    confidence: Optional[float] = Field(default=None, description="Confidence score (0-1)")
+    query_type: Optional[str] = Field(default=None, description="Type of security query (network, process, file, etc.)")
+
+class QueryConversionError(BaseModel):
+    """Query conversion error response."""
+    error: str = Field(description="Error type: OUT_OF_SCOPE, INVALID_INPUT, or CONVERSION_FAILED")
+    message: str = Field(description="Human-readable error message")
+    suggestions: Optional[List[str]] = Field(default=None, description="Suggested alternatives")
+
+class QueryConversionResult(BaseModel):
+    """Union type for query conversion results."""
+    result: Union[QueryConversionSuccess, QueryConversionError] = Field(description="Either success or error result")
+
+# Alternative TypedDict versions for streaming support
+class QueryConversionSuccessDict(TypedDict):
+    """Successful security query conversion result (TypedDict version)."""
+    query: Annotated[str, ..., "The converted structured security query"]
+    from_timestamp: Annotated[Optional[int], None, "Start time as epoch timestamp"]
+    to_timestamp: Annotated[Optional[int], None, "End time as epoch timestamp"]  
+    confidence: Annotated[Optional[float], None, "Confidence score (0-1)"]
+    query_type: Annotated[Optional[str], None, "Type of security query (network, process, file, etc.)"]
+
+class QueryConversionErrorDict(TypedDict):
+    """Query conversion error response (TypedDict version)."""
+    error: Annotated[str, ..., "Error type: OUT_OF_SCOPE, INVALID_INPUT, or CONVERSION_FAILED"]
+    message: Annotated[str, ..., "Human-readable error message"]
+    suggestions: Annotated[Optional[List[str]], None, "Suggested alternatives"]
+
+
 class CyberQueryTools:
-    """Enhanced tools manager designed for workflow-only architecture."""
+    """Enhanced tools manager designed for workflow-only architecture with structured output."""
 
     def __init__(self, memory_tool, memory_system, field_store, field_context_k, llm, finetuned_llm, system_prompts):
         self.memory_tool = memory_tool
@@ -28,6 +65,32 @@ class CyberQueryTools:
         # Caching for frequently accessed data
         self._field_cache = {}
         self._cache_lock = threading.Lock()
+        
+        # Create structured output models
+        self._setup_structured_models()
+
+    def _setup_structured_models(self):
+        """Initialize structured output models."""
+        try:
+            # Create structured LLM for query conversion with Pydantic (preferred for validation)
+            self.structured_query_llm = self.finetuned_llm.with_structured_output(
+                QueryConversionResult,
+                method="function_calling"  # Use function calling if available
+            )
+            
+            # Create streaming version with TypedDict for potential streaming use
+            self.streaming_query_llm = self.finetuned_llm.with_structured_output(
+                QueryConversionSuccessDict,
+                method="function_calling"
+            )
+            
+            logger.info("Structured output models initialized successfully")
+            
+        except Exception as e:
+            logger.warning(f"Failed to initialize structured models: {e}")
+            # Fallback to non-structured approach
+            self.structured_query_llm = self.finetuned_llm
+            self.streaming_query_llm = self.finetuned_llm
 
     def _build_conversation_context(self, conversation_history: list, max_messages: int = 4) -> str:
         """Build contextual information from recent conversation history."""
@@ -224,7 +287,154 @@ class CyberQueryTools:
         
         self.executor.submit(record)
 
-    # Updated methods to work with session_id instead of conversation_history parameter
+    def convert_to_query_tool(
+        self, 
+        natural_language: str, 
+        context: str = "", 
+        conversation_history: list = None, 
+        session_id: str = None,
+        use_streaming: bool = False
+    ) -> str:
+        """Enhanced query conversion using structured output instead of prompt engineering."""
+        logger.info(f"Converting with structured output: '{natural_language[:50]}...'")
+        
+        try:
+            start_time = datetime.now()
+
+            # Skip memory search for simple queries
+            skip_memory = len(natural_language.split()) < 3
+            
+            if not skip_memory:
+                field_context = self._build_field_context_cached(natural_language[:100])
+            else:
+                field_context = ""
+        
+            # Build conversation context
+            conv_context = self._build_conversation_context(conversation_history or [])
+
+            # Analyze for continuation intent
+            previous_context = self._extract_previous_query_context(conversation_history or [])
+            continuation_info = self._detect_continuation_intent(natural_language, conversation_history or [])
+
+            # Enhanced system message for structured output
+            system_content = f"""You are an expert security query translator with advanced conversational context awareness.
+
+CORE RESPONSIBILITY: Convert natural language to structured query like graylog format OR identify out-of-scope requests.
+
+RELEVANCE SCOPE:
+✅ IN SCOPE: security logs, network analysis, malware detection, user authentication, file monitoring, 
+process analysis, threat hunting, incident response, system monitoring, vulnerability scanning
+❌ OUT OF SCOPE: weather, cooking, personal life, general knowledge, math problems, entertainment, 
+non-security topics
+
+CONVERSION GUIDELINES:
+1. For relevant security queries: Return QueryConversionSuccess with proper structured query
+2. For out-of-scope requests: Return QueryConversionError with OUT_OF_SCOPE error
+3. Use available field context to ensure accurate field mapping
+4. Handle conversational continuations by combining with previous query context
+5. Calculate epoch timestamps when explicit time constraints are mentioned
+
+CURRENT TIME: {int(datetime.now().timestamp())}
+
+AVAILABLE FIELDS: {field_context if field_context else 'Use common security log fields'}
+"""
+            
+            if conv_context:
+                system_content += f"\n\nRECENT CONVERSATION:\n{conv_context}"
+
+            # Build user message with continuation context
+            user_message_parts = []
+            
+            # Add continuation analysis if detected
+            if continuation_info['is_continuation'] and previous_context['has_previous_query']:
+                user_message_parts.append(f"""CONTINUATION DETECTED:
+Combining with previous query using {continuation_info['conjunction_type']} logic.
+Previous Query: {previous_context['previous_query'][:200]}
+Previous Conditions: {previous_context['previous_conditions']}
+New conditions: {continuation_info['new_conditions']}""")
+            
+            if context:
+                user_message_parts.append(f"ADDITIONAL CONTEXT: {context}")
+            
+            user_message_parts.append(f"CONVERT THIS: {natural_language}")
+            
+            messages = [
+                SystemMessage(content=system_content),
+                HumanMessage(content="\n\n".join(user_message_parts))
+            ]
+
+            # Use structured output model
+            if use_streaming and hasattr(self.streaming_query_llm, 'stream'):
+                # Use streaming version if requested and available
+                result = self.streaming_query_llm.invoke(messages)
+                response_content = self._format_structured_response(result, is_streaming=True)
+            else:
+                # Use standard structured output
+                result = self.structured_query_llm.invoke(messages)
+                response_content = self._format_structured_response(result)
+
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.info(f"Structured conversion completed in {duration:.2f}s")
+
+            # Async recording for successful conversions
+            if not self._is_error_response(response_content):
+                self._record_conversion_async(natural_language, response_content)
+
+            return response_content
+
+        except Exception as e:
+            logger.error(f"Structured conversion error: {str(e)}")
+            return self._format_error_response("CONVERSION_FAILED", 
+                                             "Conversion failed due to system error. Please try a simpler query format.")
+
+    def _format_structured_response(self, result: Union[QueryConversionResult, dict], is_streaming: bool = False) -> str:
+        """Format the structured output result into a user-friendly response."""
+        try:
+            if is_streaming:
+                # Handle TypedDict result from streaming
+                if isinstance(result, dict):
+                    if 'error' in result:
+                        return self._format_error_response(result['error'], result['message'], 
+                                                         result.get('suggestions'))
+                    else:
+                        return result.get('query', 'No query generated')
+            else:
+                # Handle Pydantic result
+                if hasattr(result, 'result'):
+                    inner_result = result.result
+                    if isinstance(inner_result, QueryConversionSuccess):
+                        return inner_result
+                    elif isinstance(inner_result, QueryConversionError):
+                        return self._format_error_response(inner_result.error, inner_result.message, 
+                                                         inner_result.suggestions)
+                elif isinstance(result, dict):
+                    # Fallback for dict-like results
+                    return result.get('query', str(result))
+                
+            # Fallback - return string representation
+            return str(result)
+            
+        except Exception as e:
+            logger.error(f"Error formatting structured response: {e}")
+            return self._format_error_response("CONVERSION_FAILED", 
+                                             "Failed to format query conversion result.")
+
+    def _format_error_response(self, error_type: str, message: str, suggestions: Optional[List[str]] = None) -> str:
+        """Format error responses consistently."""
+        if error_type == "OUT_OF_SCOPE":
+            response = f"{message}"
+            if suggestions:
+                response += f"\n\nSuggestions:\n" + "\n".join(f"• {s}" for s in suggestions)
+            return response
+        else:
+            return f"Error: {message}"
+
+    def _is_error_response(self, response: str) -> bool:
+        """Check if response indicates an error condition."""
+        error_indicators = ['Error:', 'OUT_OF_SCOPE:', 'I\'m specialized in', 'not relevant to security']
+        return any(indicator in response for indicator in error_indicators)
+
+    # Memory search tool with session awareness
     def memory_search_tool(self, query: str, session_id: str = None) -> str:
         """Enhanced memory search with session awareness."""
         logger.info(f"Memory search: '{query[:50]}...'")
@@ -272,116 +482,7 @@ class CyberQueryTools:
         
         return formatted
 
-    def convert_to_query_tool(self, natural_language: str, context: str = "", conversation_history: list = None, session_id: str = None) -> str:
-        """Enhanced query conversion with integrated relevance checking."""
-        logger.info(f"Converting: '{natural_language[:50]}...'")
-        try:
-            start_time = datetime.now()
-
-            # Skip memory search for simple queries
-            skip_memory = len(natural_language.split()) < 5
-            
-            if not skip_memory:
-                field_context = self._build_field_context_cached(natural_language[:100])
-            else:
-                field_context = ""
-        
-            # Build conversation context
-            conv_context = self._build_conversation_context(conversation_history or [])
-
-            # Analyze for continuation intent
-            previous_context = self._extract_previous_query_context(conversation_history or [])
-            continuation_info = self._detect_continuation_intent(natural_language, conversation_history or [])
-
-            # Enhanced system prompt with integrated relevance checking
-            system_prompt = f"""You are an expert security query translator with advanced conversational context awareness.
-
-    RELEVANCE CHECK: First determine if the input is relevant to security query conversion:
-    - Relevant: security logs, network analysis, malware detection, user authentication, file monitoring, process analysis, threat hunting, incident response
-    - Not relevant: other topics like weather, cooking, personal life, general knowledge unrelated to security, math problems, entertainment
-
-    If the input is NOT relevant to security queries, respond with JSON: {{"error": "OUT_OF_SCOPE", "message": "I'm specialized in security query conversions. I can help with converting natural language to security queries, analyzing logs, and security-related tasks. How can I assist with your security queries?"}}
-
-    If the input IS relevant, proceed with conversion and respond with JSON in this exact format:
-    {{
-        "query": "your_structured_query_here",
-        "from": epoch_timestamp_or_null,
-        "to": epoch_timestamp_or_null
-    }}
-
-    KEY CAPABILITIES:
-    1. Convert natural language to structured Graylog queries
-    2. Understand conversational context and follow-up queries
-    3. Handle continuations with AND, OR, NOT logic appropriately
-    4. Maintain previous query context when building upon existing queries
-    5. Make sure to use at least one of fields in field context
-
-    RESPONSE FORMAT:
-    - Return ONLY the structured query, no explanations
-    - For continuations, combine with previous query using appropriate logical operators
-    - Use proper syntax for the target query language
-    - Ensure all conditions are properly formatted
-
-
-    TIME HANDLING:
-    - When time constraint information is provided, calculate the epoch timestamps and use the format: timestamp:[FROM_EPOCH TO TO_EPOCH]
-    - Only add time constraints when explicit time information is provided in the TIME CONSTRAINT DETECTED section
-    - Use the exact epoch timestamps provided - do not modify them
-    - Current time is: {int(datetime.now().timestamp())}
-    """
-            
-            if conv_context:
-                system_prompt += f"\n\nRecent conversation context:\n{conv_context}"
-
-            messages = [SystemMessage(content=system_prompt)]
-            
-            # Build enhanced prompt with continuation context
-            user_message_parts = []
-            
-            # Add continuation analysis if detected
-            if continuation_info['is_continuation'] and previous_context['has_previous_query']:
-                user_message_parts.append(f"""CONTINUATION DETECTED:
-    The user is adding to their previous query with a {continuation_info['conjunction_type']} condition.
-    Previous Query: {previous_context['previous_query'][:200]}
-    Previous Conditions: {previous_context['previous_conditions']}
-    New conditions to add: {continuation_info['new_conditions']}
-
-    INSTRUCTIONS:
-    1. Take the previous query as the base
-    2. Add the new condition using {continuation_info['conjunction_type']}
-    3. Ensure proper syntax for the query language
-    4. Maintain all existing conditions unless explicitly replaced""")
-            
-            # Add field context
-            if field_context:
-                user_message_parts.append(f"{field_context}")
-            if context:
-                user_message_parts.append(f"ADDITIONAL CONTEXT:\n{context}")
-            
-            user_message_parts.append(f"CONVERT: {natural_language}")
-            
-            messages.append(HumanMessage(content="\n\n".join(user_message_parts)))
-
-            converted_query = self.finetuned_llm.invoke(messages)
-            duration = (datetime.now() - start_time).total_seconds()
-
-            logger.info(f"Converted in {duration:.2f}s")
-
-            # Check if the response indicates out of scope
-            response_content = converted_query.content.strip()
-            if response_content.startswith("OUT_OF_SCOPE:"):
-                # Return the out-of-scope message without the prefix
-                return response_content[13:].strip()
-
-            # Async recording for successful conversions
-            self._record_conversion_async(natural_language, response_content)
-
-            return response_content
-
-        except Exception as e:
-            logger.error(f"Conversion error: {str(e)}")
-            return f"Conversion failed: Please try a simpler query format."
-
+    # Rest of the methods remain the same...
     def analyze_patterns_tool(self, analysis_type: str, time_period: str = "week", conversation_history: list = None, session_id: str = None) -> str:
         """Enhanced pattern analysis with conversation context."""
         logger.info(f"Pattern analysis: {analysis_type}")
@@ -596,7 +697,7 @@ Use 'analyze patterns' for detailed insights."""
             ),
             Tool(
                 name="convert_to_query", 
-                description="Convert natural language to structured security queries",
+                description="Convert natural language to structured security queries using structured output",
                 func=lambda x: self.convert_to_query_tool(x)
             ),
             Tool(
@@ -621,7 +722,7 @@ Use 'analyze patterns' for detailed insights."""
             )
         ]
 
-        logger.debug(f"Created {len(tools)} workflow tools")
+        logger.debug(f"Created {len(tools)} workflow tools with structured output support")
         return tools
 
     # Helper methods for workflow integration
@@ -659,3 +760,174 @@ Use 'analyze patterns' for detailed insights."""
         except Exception as e:
             logger.error(f"Tool input validation error: {e}")
             return False
+
+    # Additional helper methods for structured output
+    def get_structured_conversion_with_confidence(
+        self, 
+        natural_language: str, 
+        confidence_threshold: float = 0.7,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Get structured conversion result with confidence scoring."""
+        try:
+            # Use structured output to get detailed result
+            result = self.structured_query_llm.invoke([
+                SystemMessage(content="""Convert the security query and provide confidence scoring.
+                
+Return detailed conversion information including:
+- The converted query
+- Confidence score (0.0-1.0)  
+- Query type classification
+- Any relevant timestamps"""),
+                HumanMessage(content=f"Convert: {natural_language}")
+            ])
+            
+            if hasattr(result, 'result') and isinstance(result.result, QueryConversionSuccess):
+                conversion = result.result
+                return {
+                    'success': True,
+                    'query': conversion.query,
+                    'confidence': conversion.confidence or 0.8,  # Default confidence
+                    'query_type': conversion.query_type or 'general',
+                    'from_timestamp': conversion.from_timestamp,
+                    'to_timestamp': conversion.to_timestamp,
+                    'meets_threshold': (conversion.confidence or 0.8) >= confidence_threshold
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': 'Conversion failed or out of scope',
+                    'confidence': 0.0
+                }
+                
+        except Exception as e:
+            logger.error(f"Structured conversion with confidence error: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'confidence': 0.0
+            }
+
+    def batch_convert_queries(self, queries: List[str], **kwargs) -> List[Dict[str, Any]]:
+        """Convert multiple queries using structured output for efficiency."""
+        results = []
+        
+        for i, query in enumerate(queries):
+            try:
+                logger.info(f"Processing batch query {i+1}/{len(queries)}")
+                result = self.get_structured_conversion_with_confidence(query, **kwargs)
+                results.append({
+                    'index': i,
+                    'original_query': query,
+                    **result
+                })
+                
+            except Exception as e:
+                logger.error(f"Batch conversion error for query {i}: {e}")
+                results.append({
+                    'index': i,
+                    'original_query': query,
+                    'success': False,
+                    'error': str(e),
+                    'confidence': 0.0
+                })
+        
+        return results
+
+    def validate_structured_output_support(self) -> Dict[str, bool]:
+        """Check which structured output features are supported by the current LLM."""
+        capabilities = {
+            'function_calling': False,
+            'json_mode': False,
+            'streaming': False,
+            'pydantic_support': False
+        }
+        
+        try:
+            # Test function calling
+            test_llm = self.finetuned_llm.with_structured_output(
+                QueryConversionSuccess,
+                method="function_calling"
+            )
+            capabilities['function_calling'] = True
+            capabilities['pydantic_support'] = True
+        except:
+            pass
+            
+        try:
+            # Test JSON mode
+            test_llm = self.finetuned_llm.with_structured_output(
+                QueryConversionSuccessDict,
+                method="json_mode"
+            )
+            capabilities['json_mode'] = True
+        except:
+            pass
+            
+        try:
+            # Test streaming
+            if hasattr(self.streaming_query_llm, 'stream'):
+                capabilities['streaming'] = True
+        except:
+            pass
+            
+        logger.info(f"Structured output capabilities: {capabilities}")
+        return capabilities
+
+    def get_query_examples_structured(self, query_type: str = "general") -> List[Dict[str, str]]:
+        """Get structured examples for different query types."""
+        examples = {
+            "network": [
+                {
+                    "natural_language": "Show me all connections to suspicious IP 192.168.1.100",
+                    "structured_query": 'source_ip:"192.168.1.100" OR destination_ip:"192.168.1.100"',
+                    "description": "Network connection analysis"
+                },
+                {
+                    "natural_language": "Find DNS queries to malicious domains in the last hour",
+                    "structured_query": 'query_type:"DNS" AND (domain:*malicious* OR threat_intel:true) AND timestamp:[now-1h TO now]',
+                    "description": "DNS threat analysis with time constraint"
+                }
+            ],
+            "process": [
+                {
+                    "natural_language": "Show processes running from temp directories",
+                    "structured_query": 'process_path:(*temp* OR *tmp* OR *appdata\\local\\temp*)',
+                    "description": "Process location analysis"
+                },
+                {
+                    "natural_language": "Find unsigned executables running as system",
+                    "structured_query": 'process_signed:false AND process_user:*system*',
+                    "description": "Process integrity and privilege analysis"
+                }
+            ],
+            "file": [
+                {
+                    "natural_language": "Show files created in system directories today",
+                    "structured_query": 'file_path:(*system32* OR *windows*) AND file_created:[now/d TO now] AND event_type:file_create',
+                    "description": "System file creation monitoring"
+                }
+            ]
+        }
+        
+        return examples.get(query_type, examples["network"])
+
+    def export_structured_config(self) -> Dict[str, Any]:
+        """Export configuration for structured output setup."""
+        capabilities = self.validate_structured_output_support()
+        
+        config = {
+            'structured_output_enabled': any(capabilities.values()),
+            'capabilities': capabilities,
+            'schemas': {
+                'success_schema': QueryConversionSuccess.schema(),
+                'error_schema': QueryConversionError.schema(),
+                'result_schema': QueryConversionResult.schema()
+            },
+            'field_context_enabled': bool(self.field_store),
+            'memory_enabled': bool(self.memory_tool),
+            'session_aware': hasattr(self.memory_system, 'search_session_memories')
+        }
+        
+        logger.info("Structured output configuration exported")
+        return config

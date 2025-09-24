@@ -200,9 +200,9 @@ class CyberQueryAssistant:
         else:
             return "general"
 
-    def process_user_input(self, user_input: str, session_id: str = "default") -> str:
-        """WORKFLOW-ONLY processing - no direct tool calls."""
-        logger.info(f"🎯 Processing via OpenRouter workflow: {user_input[:50]}... (session: {session_id})")
+    def process_user_input(self, user_input: str, session_id: str = "default", conversation_history: list = None) -> str:
+        """WORKFLOW-ONLY processing with structured output integration."""
+        logger.info(f"Processing via OpenRouter workflow: {user_input[:50]}... (session: {session_id})")
 
         try:
             start_time = datetime.now()
@@ -214,34 +214,44 @@ class CyberQueryAssistant:
             cache_key = self._get_cache_key(user_input, session_id, task_type)
             cached_response = self._get_from_cache(cache_key)
             if cached_response:
-                logger.info("⚡ Cache hit")
+                logger.info("Cache hit")
                 return cached_response
 
             # Ensure workflow is ready
             self._initialize_workflow()
 
-            # Build initial state - workflow handles conversation history
+            # Build initial state with structured output context
             initial_state = AssistantState(
-                messages=[HumanMessage(content=user_input)],  # Minimal initial state
+                messages=[HumanMessage(content=user_input)],
                 user_input=user_input,
-                mode="auto",  # Let workflow determine mode
-                current_task=task_type,  # Hint for workflow
+                mode="auto",
+                current_task=task_type,
                 memory_context="",
                 conversion_result="",
                 analysis_result="",
                 error_message="",
                 tool_calls=[],
-                session_id=session_id
+                session_id=session_id,
+                # Add structured output context
+                conversation_history=conversation_history or [],
+                metadata = {
+                    "from_timestamp": None,
+                    "to_timestamp": None,
+                    "query_type": None,
+                    "confidence": None
+                }
             )
 
-            # Process through workflow ONLY
+            # Process through workflow with structured output config
             config = RunnableConfig(
-                configurable={"thread_id": session_id},
+                configurable={
+                    "thread_id": session_id,
+                    "use_structured_output": True
+                },
                 recursion_limit=10
             )
             
             final_state = self._graph.invoke(initial_state, config)
-            
             # Extract response from workflow
             ai_messages = [msg for msg in final_state["messages"] if isinstance(msg, AIMessage)]
             if ai_messages:
@@ -251,22 +261,25 @@ class CyberQueryAssistant:
                     "session_id": final_state["session_id"],
                     "timestamp": datetime.now().isoformat(),
                     "duration": duration,
+                    "from_timestamp": final_state["metadata"]["from_timestamp"],
+                    "to_timestamp": final_state["metadata"]["to_timestamp"],
+                    "confidence": final_state["metadata"]["confidence"],
                     "task_type": final_state["current_task"],
                     "success": "success" if final_state["current_task"] != "error" else "error",
-                    "model_provider": "openrouter"
+                    "model_provider": "openrouter",
                 }
                 
                 # Cache the response
                 self._add_to_cache(cache_key, response)
                 
-                logger.info(f"✅ OpenRouter workflow completed in {duration:.2f}s")
+                logger.info(f"OpenRouter workflow completed in {duration:.2f}s")
                 return response
             else:
                 return "I processed your request through the OpenRouter workflow but couldn't generate a response. Please try again."
 
         except Exception as e:
-            logger.error(f"❌ OpenRouter workflow processing error: {str(e)}", exc_info=True)
-            return "I encountered an error in the OpenRouter workflow. Please try rephrasing your request or contact support."
+            logger.error(f"OpenRouter workflow processing error: {str(e)}", exc_info=True)
+            return "I encountered an error. Please try rephrasing your request or contact support."
 
     # SIMPLIFIED API METHODS - All route through workflow
     def chat_with_memory(self, user_input: str, session_id: str = "api") -> str:
