@@ -11,7 +11,7 @@ from memori import ConfigManager, Memori, create_memory_tool
 from config import get_settings, logger
 from services.document_ingestor import DocumentIngestor
 from models import AssistantState
-from tools import CyberQueryTools
+from tools import CyberQueryManager
 from workflows import CyberQueryWorkflow
 from prompts import SystemPrompts
 from memory_system import MemoryManager
@@ -140,7 +140,7 @@ class CyberQueryAssistant:
             self.memory_manager = MemoryManager(self.memory_system)
             
             # Create tools manager (workflow will use this)
-            self.tools_manager = CyberQueryTools(
+            self.tools_manager = CyberQueryManager(
                 memory_tool=self.memory_tool,
                 memory_system=self.memory_manager,
                 field_store=self.field_store,
@@ -252,6 +252,7 @@ class CyberQueryAssistant:
             )
             
             final_state = self._graph.invoke(initial_state, config)
+            logger.info(f"Final state: {final_state}")
             # Extract response from workflow
             ai_messages = [msg for msg in final_state["messages"] if isinstance(msg, AIMessage)]
             if ai_messages:
