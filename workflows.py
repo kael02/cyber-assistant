@@ -227,13 +227,10 @@ class CyberQueryWorkflow:
                 conversation_history=conversation_history,
                 session_id=session_id
             )
-            state["conversion_result"] = result.query
-            state["metadata"] = {
-                "from_timestamp": result.from_timestamp,
-                "to_timestamp": result.to_timestamp,
-                "query_type": result.query_type,
-                "confidence": result.confidence
-            }
+
+            logger.info(f"Conversion result: {result}")
+            state["conversion_result"] = result["response"]
+            state["metadata"] = result["metadata"]
             
         except Exception as e:
             logger.error(f"Conversion error: {e}")

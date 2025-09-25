@@ -66,6 +66,10 @@ class CyberQueryTools:
         self._field_cache = {}
         self._cache_lock = threading.Lock()
         
+        self.example_context_k = 3
+        self.combined_context_enabled = True
+        self.example_relevance_threshold = 1.5
+        
         # Create structured output models
         self._setup_structured_models()
 
@@ -249,6 +253,410 @@ class CyberQueryTools:
         
         return False
 
+
+    @lru_cache(maxsize=100)
+    def _build_example_context_cached(self, nl_query: str, k: Optional[int] = None) -> str:
+        """Completely field-agnostic approach using progressive query degradation."""
+        try:
+            k = k or self.example_context_k
+            
+            # Progressive search strategy - start specific, get broader
+            search_strategies = [
+                self._extract_all_meaningful_words,      # All meaningful words
+                self._extract_action_and_object_words,   # Action + object focus  
+                self._extract_domain_words,              # Security domain words
+                self._extract_core_concepts,             # Abstract concepts
+            ]
+            
+            all_examples = []
+            seen_examples = set()
+            
+            for i, strategy in enumerate(search_strategies):
+                search_query = strategy(nl_query)
+                if not search_query:
+                    continue
+                    
+                logger.debug(f"Search attempt {i+1}: '{search_query}'")
+                
+                examples = self.field_store.search_examples(
+                    search_query,
+                    limit=k * 2,
+                    relevance_threshold=self.example_relevance_threshold
+                ) or []
+                
+                # Deduplicate by query content
+                new_examples = []
+                for ex in examples:
+                    query_hash = hash(ex.get("query", "").strip().lower())
+                    if query_hash not in seen_examples:
+                        seen_examples.add(query_hash)
+                        new_examples.append(ex)
+                        all_examples.append(ex)
+                
+                logger.debug(f"  Found {len(new_examples)} new examples")
+                
+                # If we have enough good examples, stop early
+                if len(all_examples) >= k and i >= 1:
+                    break
+            
+            if not all_examples:
+                logger.debug(f"No examples found for: '{nl_query}'")
+                return ""
+            
+            # Rank all examples using content-based scoring
+            ranked_examples = self._rank_examples_by_content_similarity(nl_query, all_examples)
+            final_examples = ranked_examples[:k]
+            
+            logger.debug(f"Final selection: {len(final_examples)} examples")
+            return self._format_examples_with_relevance_scores(final_examples, nl_query)
+            
+        except Exception as e:
+            logger.error(f"Field-agnostic context error: {e}")
+            return ""
+
+    def _extract_all_meaningful_words(self, query: str) -> str:
+        """Extract all potentially meaningful words, excluding only common stop words."""
+        # Very minimal stop word list - keep most words
+        minimal_stops = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
+        
+        # Extract words, including numbers and technical terms
+        words = re.findall(r'\b\w+\b', query.lower())
+        meaningful_words = [w for w in words if w not in minimal_stops and len(w) > 1]
+        
+        return " ".join(meaningful_words)
+
+    def _extract_action_and_object_words(self, query: str) -> str:
+        """Focus on action words and potential object words."""
+        words = re.findall(r'\b\w+\b', query.lower())
+        
+        # Common action words in security queries
+        actions = []
+        objects = []
+        other = []
+        
+        for word in words:
+            if word in {'select', 'find', 'show', 'get', 'search', 'list', 'display', 'filter', 'query'}:
+                actions.append(word)
+            elif word in {'logs', 'events', 'data', 'records', 'entries', 'traffic', 'connections', 'processes', 'files'}:
+                objects.append(word)
+            elif len(word) > 2 and word not in {'the', 'and', 'with', 'from', 'that'}:
+                other.append(word)
+        
+        # Prioritize actions and objects, but include other meaningful terms
+        result_words = actions + objects + other[:5]  # Limit other words
+        return " ".join(result_words)
+
+    def _extract_domain_words(self, query: str) -> str:
+        """Extract words that are likely related to security/IT domain."""
+        query_lower = query.lower()
+        words = re.findall(r'\b\w+\b', query_lower)
+        
+        domain_words = []
+        for word in words:
+            # Include any word that might be security/network/system related
+            # This is intentionally broad to capture domain-specific terminology
+            if (len(word) >= 3 and 
+                word not in {'the', 'and', 'with', 'from', 'that', 'this', 'are', 'was', 'were', 'have', 'has'}):
+                domain_words.append(word)
+        
+        return " ".join(domain_words)
+
+    def _extract_core_concepts(self, query: str) -> str:
+        """Extract the most abstract, core concepts."""
+        query_lower = query.lower()
+        
+        # Look for time-related concepts
+        time_indicators = []
+        if any(term in query_lower for term in ['time', 'minute', 'hour', 'day', 'last', 'recent', 'past', 'ago']):
+            time_indicators.extend(['time', 'temporal'])
+        
+        # Look for data/query concepts
+        data_indicators = []
+        if any(term in query_lower for term in ['select', 'find', 'show', 'get', 'search', 'query']):
+            data_indicators.extend(['search', 'query'])
+        
+        if any(term in query_lower for term in ['log', 'event', 'record', 'data']):
+            data_indicators.extend(['data', 'logs'])
+        
+        # Look for network concepts  
+        network_indicators = []
+        if any(term in query_lower for term in ['network', 'connection', 'traffic', 'address', 'ip', 'port']):
+            network_indicators.extend(['network'])
+        
+        # Combine all concept indicators
+        concepts = time_indicators + data_indicators + network_indicators
+        
+        # If no specific concepts found, use a very general search
+        if not concepts:
+            concepts = ['security', 'analysis']
+        
+        return " ".join(concepts)
+
+    def _rank_examples_by_content_similarity(self, nl_query: str, examples: List[Dict]) -> List[Dict]:
+        """Rank examples by content similarity without field-specific logic."""
+        if not examples:
+            return []
+        
+        nl_words = set(re.findall(r'\b\w+\b', nl_query.lower()))
+        nl_length = len(nl_query.split())
+        
+        scored_examples = []
+        
+        for ex in examples:
+            score = 0.0
+            description = ex.get("description", "").lower()
+            query = ex.get("query", "").lower() 
+            combined_text = f"{description} {query}"
+            
+            # Base vector similarity score (lower distance = higher relevance)
+            distance = ex.get("distance", 1.0)
+            base_score = max(0, 1.5 - distance)  # Convert distance to similarity
+            score += base_score * 2.0
+            
+            # Word overlap scoring
+            ex_words = set(re.findall(r'\b\w+\b', combined_text))
+            overlap = len(nl_words & ex_words)
+            overlap_ratio = overlap / len(nl_words) if nl_words else 0
+            score += overlap_ratio * 3.0
+            
+            # Partial word matching (for technical terms)
+            partial_matches = 0
+            for nl_word in nl_words:
+                if len(nl_word) > 3:  # Only for longer words
+                    for ex_word in ex_words:
+                        if nl_word in ex_word or ex_word in nl_word:
+                            partial_matches += 0.5
+            score += min(partial_matches, 2.0)  # Cap the bonus
+            
+            # Length similarity bonus (similar complexity queries)
+            ex_length = len(f"{description} {query}".split())
+            if ex_length > 0:
+                length_ratio = min(nl_length, ex_length) / max(nl_length, ex_length)
+                if length_ratio > 0.5:  # Similar length queries
+                    score += 0.5
+            
+            # Query structure similarity (very basic)
+            nl_has_numbers = bool(re.search(r'\d', nl_query))
+            ex_has_numbers = bool(re.search(r'\d', combined_text))
+            if nl_has_numbers == ex_has_numbers:
+                score += 0.3
+            
+            # Prefer examples with actual query syntax
+            if ':' in query and len(query) > 10:
+                score += 0.4
+            
+            # Slight penalty for overly long examples
+            if len(combined_text) > 300:
+                score -= 0.2
+                
+            scored_examples.append((score, ex))
+        
+        # Sort by score descending
+        scored_examples.sort(key=lambda x: x[0], reverse=True)
+        return [ex for score, ex in scored_examples]
+
+    def _format_examples_with_relevance_scores(self, examples: List[Dict], original_query: str) -> str:
+        """Format examples showing why they were selected."""
+        if not examples:
+            return ""
+        
+        example_lines = []
+        original_words = set(re.findall(r'\b\w+\b', original_query.lower()))
+        
+        for i, ex in enumerate(examples, 1):
+            description = ex.get("description", "").strip()
+            query = ex.get("query", "").strip()
+            distance = ex.get("distance", 1.0)
+            
+            # Calculate match indicators
+            combined_text = f"{description} {query}".lower()
+            ex_words = set(re.findall(r'\b\w+\b', combined_text))
+            matching_words = original_words & ex_words
+            
+            # Format the example
+            example_text = f"{i}. {description}"
+            
+            # Add query snippet
+            if len(query) <= 100:
+                query_display = query
+            else:
+                query_display = query[:97] + "..."
+            example_text += f"\n   Query: {query_display}"
+            
+            # Show relevance indicators for debugging
+            if matching_words and len(matching_words) <= 5:
+                match_list = ", ".join(sorted(matching_words))
+                example_text += f"\n   Matches: {match_list}"
+            
+            # Show similarity score
+            similarity = max(0, 1.5 - distance)
+            if similarity > 0.1:
+                example_text += f"\n   Relevance: {similarity:.2f}"
+            
+            example_lines.append(example_text)
+        
+        header = f"Found {len(examples)} relevant examples:"
+        return f"{header}\n\n" + "\n\n".join(example_lines)
+
+    def _filter_and_rank_examples(self, nl_query: str, examples: List[Dict], limit: int) -> List[Dict]:
+        """Smart filtering and ranking of examples based on query characteristics."""
+        if not examples:
+            return []
+        
+        nl_lower = nl_query.lower()
+        scored_examples = []
+        
+        for ex in examples:
+            score = 0.0
+            description = ex.get("description", "").lower()
+            query = ex.get("query", "").lower()
+            category = ex.get("category", "").lower()
+            complexity = ex.get("complexity", "").lower()
+            
+            # Base relevance score (from vector search distance - lower is better)
+            base_score = 1.0 - min(ex.get("distance", 0.5), 1.0)
+            score += base_score * 2.0
+            
+            # Keyword matching boost
+            query_keywords = self._extract_security_keywords(nl_query)
+            example_keywords = self._extract_security_keywords(f"{description} {query}")
+            
+            keyword_overlap = len(set(query_keywords) & set(example_keywords))
+            if keyword_overlap > 0:
+                score += keyword_overlap * 0.3
+            
+            # Category relevance boost
+            if category:
+                if any(cat_word in nl_lower for cat_word in category.split()):
+                    score += 0.5
+            
+            # Complexity preference (prefer simpler examples for complex queries)
+            query_complexity = self._estimate_query_complexity(nl_query)
+            if complexity:
+                if query_complexity == "simple" and complexity == "simple":
+                    score += 0.3
+                elif query_complexity == "complex" and complexity in ["simple", "medium"]:
+                    score += 0.2  # Prefer simpler examples for complex queries
+            
+            # Field usage alignment
+            nl_fields = self._extract_field_references(nl_query)
+            example_fields = self._extract_field_references(query)
+            
+            if nl_fields and example_fields:
+                field_overlap = len(set(nl_fields) & set(example_fields))
+                if field_overlap > 0:
+                    score += field_overlap * 0.25
+            
+            # Penalize overly long examples (they clutter the context)
+            if len(query) > 200:
+                score -= 0.2
+            
+            scored_examples.append((score, ex))
+        
+        # Sort by score (descending) and take top examples
+        scored_examples.sort(key=lambda x: x[0], reverse=True)
+        return [ex for _, ex in scored_examples[:limit]]
+
+    def _extract_security_keywords(self, text: str) -> List[str]:
+        """Extract security-relevant keywords for better example matching."""
+        keywords = []
+        text_lower = text.lower()
+        
+        # Network keywords
+        network_terms = ['ip', 'network', 'connection', 'traffic', 'port', 'protocol', 'dns', 'tcp', 'udp']
+        keywords.extend([term for term in network_terms if term in text_lower])
+        
+        # Security keywords
+        security_terms = ['malware', 'threat', 'attack', 'suspicious', 'malicious', 'vulnerability', 'exploit']
+        keywords.extend([term for term in security_terms if term in text_lower])
+        
+        # Event keywords
+        event_terms = ['event', 'log', 'audit', 'activity', 'action', 'process', 'file', 'user']
+        keywords.extend([term for term in event_terms if term in text_lower])
+        
+        # Time keywords
+        time_terms = ['time', 'date', 'recent', 'last', 'between', 'today', 'yesterday', 'hour', 'day']
+        keywords.extend([term for term in time_terms if term in text_lower])
+        
+        return list(set(keywords))  # Remove duplicates
+
+    def _extract_field_references(self, text: str) -> List[str]:
+        """Extract potential field references from natural language text."""
+        fields = []
+        text_lower = text.lower()
+        
+        # Common field patterns
+        field_patterns = {
+            'source_ip': ['source ip', 'src ip', 'from ip', 'originating ip'],
+            'destination_ip': ['destination ip', 'dest ip', 'dst ip', 'target ip', 'to ip'],
+            'user': ['user', 'username', 'account', 'login'],
+            'process': ['process', 'executable', 'program', 'application'],
+            'file': ['file', 'path', 'filename', 'document'],
+            'port': ['port', 'service'],
+            'timestamp': ['time', 'date', 'when', 'timestamp']
+        }
+        
+        for field, patterns in field_patterns.items():
+            if any(pattern in text_lower for pattern in patterns):
+                fields.append(field)
+        
+        return fields
+
+    def _estimate_query_complexity(self, nl_query: str) -> str:
+        """Estimate the complexity of a natural language query."""
+        query_lower = nl_query.lower()
+        word_count = len(nl_query.split())
+        
+        # Complex indicators
+        complex_terms = ['and', 'or', 'not', 'between', 'range', 'group by', 'aggregate', 'join']
+        complex_count = sum(1 for term in complex_terms if term in query_lower)
+        
+        # Time complexity
+        time_terms = ['last', 'between', 'from', 'to', 'during', 'since', 'until']
+        has_time_complexity = any(term in query_lower for term in time_terms)
+        
+        if word_count <= 5 and complex_count == 0:
+            return "simple"
+        elif word_count <= 10 and complex_count <= 1 and not has_time_complexity:
+            return "medium"
+        else:
+            return "complex"
+
+    def _build_combined_context(self, nl_query: str) -> Dict[str, str]:
+        """Build combined field and example context with smart optimization."""
+        context = {
+            'field_context': '',
+            'example_context': '',
+            'combined_context': ''
+        }
+        
+        try:
+            # Get both contexts
+            field_context = self._build_field_context_cached(nl_query[:100])
+            example_context = self._build_example_context_cached(nl_query[:100])
+            
+            context['field_context'] = field_context
+            context['example_context'] = example_context
+            
+            # Create optimized combined context
+            if field_context and example_context:
+                # Limit field context if we have good examples
+                limited_fields = field_context
+                if len(field_context) > 300:
+                    field_lines = field_context.split('\n')
+                    limited_fields = '\n'.join(field_lines[:6])  # Limit to 6 lines
+                
+                context['combined_context'] = f"{limited_fields}\n\n{example_context}"
+            elif field_context:
+                context['combined_context'] = field_context
+            elif example_context:
+                context['combined_context'] = example_context
+            
+        except Exception as e:
+            logger.error(f"Combined context error: {e}")
+        
+        return context
+
     @lru_cache(maxsize=100)
     def _build_field_context_cached(self, nl_query: str, k: Optional[int] = None) -> str:
         """Cached version of field context building."""
@@ -293,10 +701,11 @@ class CyberQueryTools:
         context: str = "", 
         conversation_history: list = None, 
         session_id: str = None,
-        use_streaming: bool = False
+        use_streaming: bool = False,
+        include_examples: bool = True
     ) -> str:
-        """Enhanced query conversion using structured output instead of prompt engineering."""
-        logger.info(f"Converting with structured output: '{natural_language[:50]}...'")
+        """Enhanced query conversion with example context integration."""
+        logger.info(f"Converting with enhanced context: '{natural_language[:50]}...'")
         
         try:
             start_time = datetime.now()
@@ -304,7 +713,11 @@ class CyberQueryTools:
             # Skip memory search for simple queries
             skip_memory = len(natural_language.split()) < 3
             
-            if not skip_memory:
+            # Build enhanced context with both fields and examples
+            if not skip_memory and self.combined_context_enabled and include_examples:
+                combined_context = self._build_combined_context(natural_language[:100])
+                field_context = combined_context['combined_context']
+            elif not skip_memory:
                 field_context = self._build_field_context_cached(natural_language[:100])
             else:
                 field_context = ""
@@ -316,10 +729,10 @@ class CyberQueryTools:
             previous_context = self._extract_previous_query_context(conversation_history or [])
             continuation_info = self._detect_continuation_intent(natural_language, conversation_history or [])
 
-            # Enhanced system message for structured output
-            system_content = f"""You are an expert security query translator with advanced conversational context awareness.
+            # Enhanced system message with example-aware instructions
+            system_content = f"""You are an expert security query translator with advanced conversational context awareness and example-based learning.
 
-CORE RESPONSIBILITY: Convert natural language to structured query like graylog format OR identify out-of-scope requests.
+CORE RESPONSIBILITY: Convert natural language to structured query format OR identify out-of-scope requests.
 
 RELEVANCE SCOPE:
 ✅ IN SCOPE: security logs, network analysis, malware detection, user authentication, file monitoring, 
@@ -330,13 +743,22 @@ non-security topics
 CONVERSION GUIDELINES:
 1. For relevant security queries: Return QueryConversionSuccess with proper structured query
 2. For out-of-scope requests: Return QueryConversionError with OUT_OF_SCOPE error
-3. Use available field context to ensure accurate field mapping
-4. Handle conversational continuations by combining with previous query context
-5. Calculate epoch timestamps when explicit time constraints are mentioned
+3. Use available field and example context to ensure accurate mapping and syntax
+4. Learn from provided examples - match similar patterns and syntax styles
+5. If query cannot be constructed with available context, return QueryConversionError with NOT_SUPPORTED error
+6. Handle conversational continuations by combining with previous query context
+7. Calculate epoch timestamps when explicit time constraints are mentioned
+
+EXAMPLE USAGE STRATEGY:
+- Study the provided examples for syntax patterns and field usage
+- Adapt example patterns to match the current query requirements
+- Maintain consistency with demonstrated query structures
+- Use examples as templates while adapting for specific user needs
 
 CURRENT TIME: {int(datetime.now().timestamp())}
 
-AVAILABLE FIELDS: {field_context if field_context else 'Use common security log fields'}
+CONTEXT INFORMATION:
+{field_context if field_context else 'Use common security log fields and standard query patterns'}
 """
             
             if conv_context:
@@ -365,16 +787,14 @@ New conditions: {continuation_info['new_conditions']}""")
 
             # Use structured output model
             if use_streaming and hasattr(self.streaming_query_llm, 'stream'):
-                # Use streaming version if requested and available
                 result = self.streaming_query_llm.invoke(messages)
                 response_content = self._format_structured_response(result, is_streaming=True)
             else:
-                # Use standard structured output
                 result = self.structured_query_llm.invoke(messages)
                 response_content = self._format_structured_response(result)
 
             duration = (datetime.now() - start_time).total_seconds()
-            logger.info(f"Structured conversion completed in {duration:.2f}s")
+            logger.info(f"Enhanced conversion completed in {duration:.2f}s")
 
             # Async recording for successful conversions
             if not self._is_error_response(response_content):
@@ -383,7 +803,7 @@ New conditions: {continuation_info['new_conditions']}""")
             return response_content
 
         except Exception as e:
-            logger.error(f"Structured conversion error: {str(e)}")
+            logger.error(f"Enhanced conversion error: {str(e)}")
             return self._format_error_response("CONVERSION_FAILED", 
                                              "Conversion failed due to system error. Please try a simpler query format.")
 
@@ -394,25 +814,74 @@ New conditions: {continuation_info['new_conditions']}""")
                 # Handle TypedDict result from streaming
                 if isinstance(result, dict):
                     if 'error' in result:
-                        return self._format_error_response(result['error'], result['message'], 
-                                                         result.get('suggestions'))
+                        return {
+                            "response": self._format_error_response(result['error'], result['message'], 
+                                                         result.get('suggestions'),),
+                            "metadata": {
+                                "from_timestamp": None,
+                                "to_timestamp": None,
+                                "query_type": None,
+                                "confidence": None
+                            }
+                        }
+                                                      
                     else:
-                        return result.get('query', 'No query generated')
+                        return {
+                            "response": result.get('query', 'No query generated'),
+                            "metadata": {
+                                "from_timestamp": None,
+                                "to_timestamp": None,
+                                "query_type": None,
+                                "confidence": None
+                            }
+                        }
             else:
                 # Handle Pydantic result
                 if hasattr(result, 'result'):
                     inner_result = result.result
                     if isinstance(inner_result, QueryConversionSuccess):
-                        return inner_result
+                        return {
+                            "response": inner_result.query,
+                            "metadata": {
+                                "from_timestamp": inner_result.from_timestamp,
+                                "to_timestamp": inner_result.to_timestamp,
+                                "query_type": inner_result.query_type,
+                                "confidence": inner_result.confidence
+                            }
+                        }
                     elif isinstance(inner_result, QueryConversionError):
-                        return self._format_error_response(inner_result.error, inner_result.message, 
-                                                         inner_result.suggestions)
+                        return {
+                            "response": self._format_error_response(inner_result.error, inner_result.message, 
+                                                         inner_result.suggestions,),
+                            "metadata": {
+                                "from_timestamp": None,
+                                "to_timestamp": None,
+                                "query_type": None,
+                                "confidence": None
+                            }
+                        }
                 elif isinstance(result, dict):
                     # Fallback for dict-like results
-                    return result.get('query', str(result))
+                    return {
+                        "response": result.get('query', str(result)),
+                        "metadata": {
+                            "from_timestamp": None,
+                            "to_timestamp": None,
+                            "query_type": None,
+                            "confidence": None
+                        }
+                    }
                 
             # Fallback - return string representation
-            return str(result)
+            return {
+                "response": str(result),
+                "metadata": {
+                    "from_timestamp": None,
+                    "to_timestamp": None,
+                    "query_type": None,
+                    "confidence": None
+                }
+            }
             
         except Exception as e:
             logger.error(f"Error formatting structured response: {e}")
@@ -422,6 +891,11 @@ New conditions: {continuation_info['new_conditions']}""")
     def _format_error_response(self, error_type: str, message: str, suggestions: Optional[List[str]] = None) -> str:
         """Format error responses consistently."""
         if error_type == "OUT_OF_SCOPE":
+            response = f"{message}"
+            if suggestions:
+                response += f"\n\nSuggestions:\n" + "\n".join(f"• {s}" for s in suggestions)
+            return response
+        elif error_type == "NOT_SUPPORTED":
             response = f"{message}"
             if suggestions:
                 response += f"\n\nSuggestions:\n" + "\n".join(f"• {s}" for s in suggestions)

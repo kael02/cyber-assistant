@@ -31,6 +31,30 @@ async def ingest_file(file: UploadFile = File(...), ingestor: DocumentIngestor =
     return result
 
 
+@router.post("/ingest-examples")
+async def ingest_query_examples(
+    file: UploadFile = File(...), 
+    ingestor: DocumentIngestor = Depends(get_ingestor)
+):
+    """
+    Ingest a CSV file containing query examples.
+    Expected columns: Description, Query, Category (optional), Complexity (optional), Fields_Used (optional)
+    """
+    suffix = Path(file.filename).suffix
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        tmp_path = tmp.name
+
+    try:
+        result = ingestor.ingest_query_examples(tmp_path)
+    finally:
+        os.remove(tmp_path)
+
+    if not result.get("success"):
+        return JSONResponse(status_code=400, content=result)
+    return result
+
+
 @router.get("/search-fields")
 def search_fields(q: str = Query(..., description="Search text"), limit: int = 50, ingestor: DocumentIngestor = Depends(get_ingestor)):
     """
