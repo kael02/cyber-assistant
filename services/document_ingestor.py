@@ -275,83 +275,105 @@ class DocumentIngestor:
     
     @staticmethod
     def _expected_example_columns() -> List[str]:
-        return ["Description", "Query", "Category", "Complexity", "Fields_Used"]
+        # Made more flexible - only require description and query
+        return ["description", "query"]
 
     @staticmethod 
     def _example_doc_from_row(row: Dict[str, str], source_filename: str) -> Document:
         """Build a LangChain Document optimized for semantic search of query examples."""
-        description = (row.get("Description") or "").strip()
-        query = (row.get("Query") or "").strip()
-        category = (row.get("Category") or "").strip()
-        complexity = (row.get("Complexity") or "").strip()
-        fields_used = (row.get("Fields_Used") or "").strip()
+        # Get the core required fields
+        description = (row.get("description") or "").strip()
+        query = (row.get("query") or "").strip()
+        
+        # Get optional fields - these may not exist in all CSV files
+        category = (row.get("category") or "").strip()
+        complexity = (row.get("complexity") or "").strip()  
+        fields_used = (row.get("fields_used") or "").strip()
 
         # Create natural language content for semantic search
+        # BUT preserve the full query in metadata
         content_parts = []
         
         if description:
-            content_parts.append(f"Example query: {description}")
+            content_parts.append(f"Query description: {description}")
             
         if category:
             content_parts.append(f"Category: {category}")
             
         if complexity:
-            content_parts.append(f"Complexity: {complexity}")
+            content_parts.append(f"Complexity level: {complexity}")
             
         if fields_used:
-            content_parts.append(f"Uses fields: {fields_used}")
-            
-        # Extract semantic keywords from description and query
+            content_parts.append(f"Uses these fields: {fields_used}")
+        
+        # Extract semantic keywords from description and query for better search
         combined_text = f"{description} {query}".lower()
         semantic_keywords = []
         
         # Network-related patterns
-        if any(term in combined_text for term in ['ip', 'network', 'traffic', 'connection']):
+        if any(term in combined_text for term in ['ip', 'network', 'traffic', 'connection', 'srcip', 'trgip']):
             semantic_keywords.append("network analysis")
             
         # Security patterns  
-        if any(term in combined_text for term in ['malware', 'threat', 'attack', 'suspicious']):
+        if any(term in combined_text for term in ['malware', 'threat', 'attack', 'suspicious', 'block', 'malicious']):
             semantic_keywords.append("security analysis")
             
         # Event patterns
-        if any(term in combined_text for term in ['event', 'log', 'audit', 'activity']):
+        if any(term in combined_text for term in ['event', 'log', 'audit', 'activity', 'evt:']):
             semantic_keywords.append("event analysis")
             
         # User patterns
-        if any(term in combined_text for term in ['user', 'account', 'login', 'authentication']):
+        if any(term in combined_text for term in ['user', 'account', 'login', 'authentication', 'srcuname', 'trguname']):
             semantic_keywords.append("user analysis")
             
         # Process patterns
-        if any(term in combined_text for term in ['process', 'executable', 'program', 'application']):
+        if any(term in combined_text for term in ['process', 'executable', 'program', 'application', 'pname:']):
             semantic_keywords.append("process analysis")
             
         # Time-based patterns
         if any(term in combined_text for term in ['time', 'date', 'recent', 'last', 'between']):
             semantic_keywords.append("temporal analysis")
             
-        if semantic_keywords:
-            content_parts.append(f"Used for: {', '.join(semantic_keywords)}")
+        # Tenant-based patterns
+        if 'tenant' in combined_text or 'tenantname:' in combined_text:
+            semantic_keywords.append("tenant filtering")
             
-        # Add a simplified version of the query for matching
+        # Domain patterns
+        if any(term in combined_text for term in ['domain', 'trgdomain:', 'dns']):
+            semantic_keywords.append("domain analysis")
+            
+        if semantic_keywords:
+            content_parts.append(f"Analysis type: {', '.join(semantic_keywords)}")
+        
+        # Extract field names from the query for better matching
         if query:
-            # Extract field patterns from query for better matching
             import re
+            # Look for field:value patterns
             field_patterns = re.findall(r'(\w+):', query)
             if field_patterns:
-                content_parts.append(f"Query uses fields like: {', '.join(set(field_patterns))}")
-            
-            # Add the actual query (truncated for space)
-            query_snippet = query[:100] + "..." if len(query) > 100 else query
-            content_parts.append(f"Example syntax: {query_snippet}")
+                unique_fields = list(set(field_patterns))
+                content_parts.append(f"Query fields: {', '.join(unique_fields)}")
         
-        page_content = ". ".join(content_parts).replace(".. ", ". ")
+        # Add query terms for semantic matching (but don't include the full syntax here)
+        # This helps with search while keeping the content semantic
+        if query:
+            # Extract meaningful terms from the query without the operators
+            import re
+            terms = re.findall(r'\b[a-zA-Z0-9_\.]+\b', query)
+            meaningful_terms = [t for t in terms if len(t) > 2 and t.lower() not in 
+                            {'and', 'or', 'not', 'with', 'from', 'where', 'select', 'evt', 'com'}][:10]
+            if meaningful_terms:
+                content_parts.append(f"Key terms: {', '.join(meaningful_terms)}")
+        
+        page_content = ". ".join(content_parts)
         if not page_content.endswith('.'):
             page_content += "."
 
+        # CRITICAL: Store the complete, unmodified query in metadata
         metadata = {
             "type": "query_example",
             "description": description,
-            "query": query,
+            "query": query,  # Full query preserved here
             "category": category or None,
             "complexity": complexity or None, 
             "fields_used": fields_used or None,
@@ -362,7 +384,7 @@ class DocumentIngestor:
         return Document(page_content=page_content, metadata=metadata)
 
     def ingest_query_examples(self, file_path: str) -> Dict[str, Any]:
-        """Ingest query examples from CSV file."""
+        """Ingest query examples from CSV file with improved parsing."""
         logger.info(f"📖 Starting query examples ingestion: {file_path}")
 
         if not Path(file_path).exists():
@@ -381,11 +403,24 @@ class DocumentIngestor:
             if delete_result.get("deleted_count", 0) > 0:
                 logger.info(f"Removed {delete_result['deleted_count']} existing example records")
 
+            # Use more robust CSV parsing options
             with open(file_path, "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
+                # Use csv.Sniffer to detect dialect
+                sample = f.read(1024)
+                f.seek(0)
                 
-                # Validate required columns (more flexible for examples)
-                required = ["Description", "Query"]
+                try:
+                    dialect = csv.Sniffer().sniff(sample)
+                except:
+                    # Fall back to default dialect
+                    dialect = csv.excel
+                
+                reader = csv.DictReader(f, dialect=dialect)
+                
+                logger.info(f"Detected CSV columns: {reader.fieldnames}")
+                
+                # Validate required columns (only require description and query)
+                required = ["description", "query"]
                 missing = [c for c in required if c not in (reader.fieldnames or [])]
                 if missing:
                     error_msg = f"Missing required columns: {missing}"
@@ -398,16 +433,25 @@ class DocumentIngestor:
 
                 for row_num, row in enumerate(reader, start=2):
                     try:
+                        # Debug: log the first few rows to see what we're getting
+                        if row_num <= 4:
+                            logger.info(f"Row {row_num} data: {dict(row)}")
+                        
                         # Skip empty rows
-                        if not any(row.values()):
+                        if not any(v.strip() for v in row.values() if v):
                             skipped += 1
                             continue
                             
-                        description = (row.get("Description") or "").strip()
-                        query = (row.get("Query") or "").strip()
+                        description = (row.get("description") or "").strip()
+                        query = (row.get("query") or "").strip()
                         
-                        if not description or not query:
-                            logger.warning(f"Row {row_num}: Missing description or query, skipping")
+                        if not description:
+                            logger.warning(f"Row {row_num}: Missing description, skipping")
+                            skipped += 1
+                            continue
+                            
+                        if not query:
+                            logger.warning(f"Row {row_num}: Missing query, skipping")
                             skipped += 1
                             continue
 

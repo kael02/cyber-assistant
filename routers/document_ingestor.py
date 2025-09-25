@@ -89,7 +89,17 @@ def delete_by_source_file(source_file: str, ingestor: DocumentIngestor = Depends
     """
     Delete all field definitions ingested from a specific source file.
     """
-    result = ingestor.delete_by_source_file(source_file)
+    result = ingestor.delete_fields_by_source_file(source_file)
+    if not result.get("success"):
+        return JSONResponse(status_code=400, content=result)
+    return result
+
+@router.delete("/examples/source/{source_file}")
+def delete_examples_by_source_file(source_file: str, ingestor: DocumentIngestor = Depends(get_ingestor)):
+    """
+    Delete all query examples ingested from a specific source file.
+    """
+    result = ingestor.delete_examples_by_source_file(source_file)
     if not result.get("success"):
         return JSONResponse(status_code=400, content=result)
     return result

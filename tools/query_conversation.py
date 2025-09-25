@@ -109,7 +109,7 @@ New conditions: {continuation_info['new_conditions']}""")
           non-security topics
 
           CONVERSION GUIDELINES:
-          1. For relevant security queries: Return QueryConversionSuccess with proper structured query
+          1. For relevant security queries: Return QueryConversionSuccess with proper structured query. This shouldn't include any time constraints. The time constraints is added later.
           2. For out-of-scope requests: Return QueryConversionError with OUT_OF_SCOPE error
           3. Use available field and example context to ensure accurate mapping and syntax
           4. Learn from provided examples - match similar patterns and syntax styles
