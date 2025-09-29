@@ -15,7 +15,7 @@ from tools import CyberQueryManager
 from workflows import CyberQueryWorkflow
 from prompts import SystemPrompts
 from memory_system import MemoryManager
-
+from memori.core.providers import ProviderConfig
 
 class CyberQueryAssistant:
     """LangGraph-based Cyber Query Assistant - WORKFLOW-ONLY ARCHITECTURE with OpenRouter."""
@@ -61,7 +61,7 @@ class CyberQueryAssistant:
         logger.info("🧠 Initializing optimized Memori...")
         
         # Use OpenRouter model for memory system if specified
-        memory_model = getattr(self.settings, 'OPENROUTER_MEMORY_MODEL', 'openai/gpt-4o-mini')
+        memory_model = getattr(self.settings, 'OPENROUTER_SECONDARY_MODEL', 'openai/gpt-5-nano')
         
         self.memory_system = Memori(
             database_connect=self._db_url,
@@ -70,26 +70,22 @@ class CyberQueryAssistant:
             verbose=False,
             model=memory_model,
             # Add OpenRouter config for Memori if it supports it
-            **self._get_openrouter_config_for_memori()
+            provider_config=self._get_openrouter_provider()
         )
         
         self.memory_system.enable()
         self.memory_tool = create_memory_tool(self.memory_system)
         logger.info("✅ Memory system ready with OpenRouter")
 
-    def _get_openrouter_config_for_memori(self) -> Dict[str, Any]:
+    def _get_openrouter_provider(self) -> Dict[str, Any]:
         """Get OpenRouter configuration for Memori if supported."""
-        config = {}
-        
-        # Check if Memori supports OpenRouter configuration
-        if hasattr(self.settings, 'OPENROUTER_API_KEY'):
-            # Some versions of Memori might support custom API configurations
-            config.update({
-                'api_key': self.settings.OPENROUTER_API_KEY,
-                'base_url': getattr(self.settings, 'OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1')
-            })
-        
-        return config
+        openrouter_provider = ProviderConfig.from_custom(
+            api_key=self.settings.OPENROUTER_API_KEY,
+            base_url=getattr(self.settings, 'OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
+            model=getattr(self.settings, 'OPENROUTER_SECONDARY_MODEL', 'openai/gpt-5-nano')
+        )
+
+        return openrouter_provider
 
     def _initialize_llms(self):
         """Initialize LLMs with OpenRouter configuration."""
@@ -111,16 +107,16 @@ class CyberQueryAssistant:
         }
         
         # Primary LLM with OpenRouter
-        primary_model = getattr(self.settings, 'OPENROUTER_PRIMARY_MODEL', self.settings.LLM_MODEL)
+        primary_model = getattr(self.settings, 'OPENROUTER_PRIMARY_MODEL', 'openai/gpt-5-nano')
         self.llm = ChatOpenAI(
             model=primary_model,
             default_headers=headers,
             **openrouter_config
         )
         
-        # Finetuned/Secondary LLM with OpenRouter
-        secondary_model = getattr(self.settings, 'OPENROUTER_SECONDARY_MODEL', self.settings.FINETUNED_MODEL_NAME)
-        self.finetuned_llm = ChatOpenAI(
+        # Secondary LLM with OpenRouter
+        secondary_model = getattr(self.settings, 'OPENROUTER_SECONDARY_MODEL', 'openai/gpt-5-nano')
+        self.secondary_llm = ChatOpenAI(
             model=secondary_model,
             default_headers=headers,
             **openrouter_config
@@ -146,7 +142,6 @@ class CyberQueryAssistant:
                 field_store=self.field_store,
                 field_context_k=self.field_context_k,
                 llm=self.llm,
-                finetuned_llm=self.finetuned_llm,
                 system_prompts=self.system_prompts
             )
             
@@ -450,7 +445,7 @@ class CyberQueryAssistant:
                 self.llm = new_llm
                 logger.info(f"✅ Switched primary model to: {model_name}")
             else:
-                self.finetuned_llm = new_llm
+                self.secondary_llm = new_llm
                 logger.info(f"✅ Switched secondary model to: {model_name}")
             
             # Reset workflow to use new models

@@ -5,9 +5,8 @@ from config import logger
 class StructuredOutputManager:
     """Manages structured LLM output for query conversion."""
     
-    def __init__(self, llm, finetuned_llm):
+    def __init__(self, llm):
         self.llm = llm
-        self.finetuned_llm = finetuned_llm
         self.structured_query_llm = None
         self.streaming_query_llm = None
         self._setup_structured_models()
@@ -16,12 +15,12 @@ class StructuredOutputManager:
         """Initialize structured output models."""
         try:
             
-            self.structured_query_llm = self.finetuned_llm.with_structured_output(
+            self.structured_query_llm = self.llm.with_structured_output(
                 QueryConversionResult,
                 method="function_calling"
             )
             
-            self.streaming_query_llm = self.finetuned_llm.with_structured_output(
+            self.streaming_query_llm = self.llm.with_structured_output(
                 QueryConversionSuccessDict,
                 method="function_calling"
             )
@@ -30,8 +29,8 @@ class StructuredOutputManager:
             
         except Exception as e:
             logger.warning(f"Failed to initialize structured models: {e}")
-            self.structured_query_llm = self.finetuned_llm
-            self.streaming_query_llm = self.finetuned_llm
+            self.structured_query_llm = self.llm
+            self.streaming_query_llm = self.llm
 
     def format_structured_response(self, result: Union[Any, dict], is_streaming: bool = False) -> Dict[str, Any]:
         """Format the structured output result into a user-friendly response."""
@@ -143,7 +142,7 @@ class StructuredOutputManager:
         }
         
         try:
-            test_llm = self.finetuned_llm.with_structured_output(
+            test_llm = self.llm.with_structured_output(
                 QueryConversionSuccess,
                 method="function_calling"
             )
@@ -153,7 +152,7 @@ class StructuredOutputManager:
             pass
             
         try:
-            test_llm = self.finetuned_llm.with_structured_output(
+            test_llm = self.llm.with_structured_output(
                 QueryConversionSuccessDict,
                 method="json_mode"
             )

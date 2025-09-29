@@ -18,14 +18,13 @@ class CyberQueryManager:
     """Main manager class that orchestrates all cyber query tools."""
     
     def __init__(self, memory_tool, memory_system, field_store, field_context_k, 
-                 llm, finetuned_llm, system_prompts):
+                 llm, system_prompts):
         # Core dependencies
         self.memory_tool = memory_tool
         self.memory_system = memory_system
         self.field_store = field_store
         self.field_context_k = field_context_k
         self.llm = llm
-        self.finetuned_llm = finetuned_llm
         self.system_prompts = system_prompts
         
         # Thread pool for async operations
@@ -45,7 +44,7 @@ class CyberQueryManager:
   
         
         # Initialize managers
-        self.structured_output = StructuredOutputManager(self.llm, self.finetuned_llm)
+        self.structured_output = StructuredOutputManager(self.llm)
         self.conversation_context = ConversationContextManager()
         self.field_context = FieldContextManager(self.field_store, self.field_context_k)
         
