@@ -64,7 +64,8 @@ class Settings(BaseSettings):
 
     # Keep OpenAI models as options but not primary
     OPENROUTER_AVAILABLE_MODELS: List[str] = ["*"]
-
+    GOOGLE_API_KEY: str = ""
+    HUGGINGFACE_API_TOKEN: str = ""
     # Logging Settings
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

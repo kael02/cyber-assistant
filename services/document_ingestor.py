@@ -6,7 +6,7 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, text
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_postgres import PGVector
 
 from config import get_settings, logger
@@ -15,14 +15,14 @@ from config import get_settings, logger
 class DocumentIngestor:
     """
     Stores field definitions and query examples in Postgres+pgvector collections via LangChain.
-    Provides ingest/search/get/delete operations for both field definitions and query examples.
+    Uses Qwen3 embeddings via Hugging Face - latest embedding model from Qwen family.
     """
 
     FIELD_COLLECTION = "field_definitions"
     EXAMPLE_COLLECTION = "query_examples"
 
-    def __init__(self, embeddings: Optional[OpenAIEmbeddings] = None):
-        logger.info("🔧 Initializing Vector Field Store...")
+    def __init__(self, embeddings: Optional[HuggingFaceEmbeddings] = None, huggingface_api_token: Optional[str] = None):
+        logger.info("🔧 Initializing Vector Field Store with Qwen3 embeddings...")
 
         self.settings = get_settings()
         self.connection_url = (
@@ -32,7 +32,34 @@ class DocumentIngestor:
         )
 
         try:
-            self.embeddings = embeddings or OpenAIEmbeddings(model="text-embedding-3-large")
+            # Use latest Qwen3 embeddings - API-based, no downloads required
+            if embeddings is None:
+                logger.info("🧠 Initializing Qwen3 embeddings...")
+                # Get API token from parameter, environment, or settings
+                api_token = (
+                    huggingface_api_token or 
+                    os.getenv("HUGGINGFACE_API_TOKEN") or 
+                    getattr(self.settings, "HUGGINGFACE_API_TOKEN", None)
+                )
+                
+                if not api_token:
+                    raise ValueError(
+                        "Hugging Face API token required. Set HUGGINGFACE_API_TOKEN environment variable "
+                        "or pass huggingface_api_token parameter. Get free token at: https://huggingface.co/settings/tokens"
+                    )
+                
+                self.embeddings = HuggingFaceEmbeddings(
+                    model_name="Qwen/Qwen3-Embedding-0.6B",  # Latest Qwen3 embedding model (768 dimensions)
+                    model_kwargs={
+                        'device': 'cpu',
+                        'trust_remote_code': True,
+                        'token': api_token
+                    },
+                    encode_kwargs={'normalize_embeddings': True}  # Normalized embeddings for better similarity search
+                )
+                logger.info("✅ Qwen3 embeddings initialized successfully")
+            else:
+                self.embeddings = embeddings
             
             # Field definitions vector store
             self.field_vs = PGVector(
@@ -66,7 +93,54 @@ class DocumentIngestor:
             logger.error(f"❌ Failed to initialize Vector Field Store: {str(e)}")
             raise
 
-        logger.info("✅ Vector Field Store initialized")
+        logger.info("✅ Vector Field Store initialized with Qwen3 embeddings")
+
+    # === SEARCH WITH OPTIMIZED TASK TYPE ===
+    
+    def _create_search_embeddings(self):
+        """Create embeddings optimized for search queries."""
+        api_token = (
+            os.getenv("HUGGINGFACE_API_TOKEN") or 
+            getattr(self.settings, "HUGGINGFACE_API_TOKEN", None)
+        )
+        return HuggingFaceEmbeddings(
+            model_name="Qwen/Qwen3-Embedding-0.6B",  # Latest Qwen3 embedding model
+            model_kwargs={
+                'device': 'cpu',
+                'trust_remote_code': True,
+                'token': api_token
+            },
+            encode_kwargs={'normalize_embeddings': True}
+        )
+
+    # === CLEAR COLLECTIONS (NEW METHOD) ===
+    
+    def clear_all_collections(self) -> Dict[str, Any]:
+        """Clear all existing vectors to resolve dimension mismatches."""
+        logger.info("🗑️ Clearing all collections to resolve dimension mismatches...")
+        try:
+            # Delete all embeddings from both collections
+            sql = text("""
+                DELETE FROM langchain_pg_embedding e
+                USING langchain_pg_collection c
+                WHERE e.collection_id = c.uuid
+                  AND c.name IN (:field_col, :example_col)
+            """)
+            
+            with self.engine.begin() as conn:
+                result = conn.execute(sql, {
+                    "field_col": self.FIELD_COLLECTION, 
+                    "example_col": self.EXAMPLE_COLLECTION
+                })
+                deleted = result.rowcount or 0
+                
+            logger.info(f"✅ Cleared {deleted} records from all collections")
+            return {"success": True, "deleted_count": deleted}
+            
+        except Exception as e:
+            error_msg = f"Error clearing collections: {str(e)}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
 
     # === FIELD DEFINITIONS ===
     
@@ -209,7 +283,7 @@ class DocumentIngestor:
 
                 docs: List[Document] = []
                 ids: List[str] = []
-                batch_size = 100
+                batch_size = 50  # Smaller batch size for Hugging Face models
 
                 for row_num, row in enumerate(reader, start=2):
                     try:
@@ -231,6 +305,7 @@ class DocumentIngestor:
                         # Process in batches
                         if len(docs) >= batch_size:
                             try:
+                                logger.info(f"Processing batch of {len(docs)} field documents...")
                                 self.field_vs.add_documents(docs, ids=ids)
                                 processed += len(docs)
                                 docs.clear()
@@ -251,6 +326,7 @@ class DocumentIngestor:
                 # Process final batch
                 if docs:
                     try:
+                        logger.info(f"Processing final batch of {len(docs)} field documents...")
                         self.field_vs.add_documents(docs, ids=ids)
                         processed += len(docs)
                     except Exception as final_error:
@@ -275,7 +351,6 @@ class DocumentIngestor:
     
     @staticmethod
     def _expected_example_columns() -> List[str]:
-        # Made more flexible - only require description and query
         return ["description", "query"]
 
     @staticmethod 
@@ -291,7 +366,6 @@ class DocumentIngestor:
         fields_used = (row.get("fields_used") or "").strip()
 
         # Create natural language content for semantic search
-        # BUT preserve the full query in metadata
         content_parts = []
         
         if description:
@@ -348,16 +422,13 @@ class DocumentIngestor:
         # Extract field names from the query for better matching
         if query:
             import re
-            # Look for field:value patterns
             field_patterns = re.findall(r'(\w+):', query)
             if field_patterns:
                 unique_fields = list(set(field_patterns))
                 content_parts.append(f"Query fields: {', '.join(unique_fields)}")
         
-        # Add query terms for semantic matching (but don't include the full syntax here)
-        # This helps with search while keeping the content semantic
+        # Add query terms for semantic matching
         if query:
-            # Extract meaningful terms from the query without the operators
             import re
             terms = re.findall(r'\b[a-zA-Z0-9_\.]+\b', query)
             meaningful_terms = [t for t in terms if len(t) > 2 and t.lower() not in 
@@ -369,11 +440,10 @@ class DocumentIngestor:
         if not page_content.endswith('.'):
             page_content += "."
 
-        # CRITICAL: Store the complete, unmodified query in metadata
         metadata = {
             "type": "query_example",
             "description": description,
-            "query": query,  # Full query preserved here
+            "query": query,
             "category": category or None,
             "complexity": complexity or None, 
             "fields_used": fields_used or None,
@@ -384,7 +454,7 @@ class DocumentIngestor:
         return Document(page_content=page_content, metadata=metadata)
 
     def ingest_query_examples(self, file_path: str) -> Dict[str, Any]:
-        """Ingest query examples from CSV file with improved parsing."""
+        """Ingest query examples from CSV file."""
         logger.info(f"📖 Starting query examples ingestion: {file_path}")
 
         if not Path(file_path).exists():
@@ -403,7 +473,6 @@ class DocumentIngestor:
             if delete_result.get("deleted_count", 0) > 0:
                 logger.info(f"Removed {delete_result['deleted_count']} existing example records")
 
-            # Use more robust CSV parsing options
             with open(file_path, "r", encoding="utf-8") as f:
                 # Use csv.Sniffer to detect dialect
                 sample = f.read(1024)
@@ -412,14 +481,13 @@ class DocumentIngestor:
                 try:
                     dialect = csv.Sniffer().sniff(sample)
                 except:
-                    # Fall back to default dialect
                     dialect = csv.excel
                 
                 reader = csv.DictReader(f, dialect=dialect)
                 
                 logger.info(f"Detected CSV columns: {reader.fieldnames}")
                 
-                # Validate required columns (only require description and query)
+                # Validate required columns
                 required = ["description", "query"]
                 missing = [c for c in required if c not in (reader.fieldnames or [])]
                 if missing:
@@ -429,11 +497,10 @@ class DocumentIngestor:
 
                 docs: List[Document] = []
                 ids: List[str] = []
-                batch_size = 100
+                batch_size = 50  # Smaller batch size for Hugging Face models
 
                 for row_num, row in enumerate(reader, start=2):
                     try:
-                        # Debug: log the first few rows to see what we're getting
                         if row_num <= 4:
                             logger.info(f"Row {row_num} data: {dict(row)}")
                         
@@ -462,6 +529,7 @@ class DocumentIngestor:
                         # Process in batches
                         if len(docs) >= batch_size:
                             try:
+                                logger.info(f"Processing batch of {len(docs)} example documents...")
                                 self.example_vs.add_documents(docs, ids=ids)
                                 processed += len(docs)
                                 docs.clear()
@@ -482,6 +550,7 @@ class DocumentIngestor:
                 # Process final batch
                 if docs:
                     try:
+                        logger.info(f"Processing final batch of {len(docs)} example documents...")
                         self.example_vs.add_documents(docs, ids=ids)
                         processed += len(docs)
                     except Exception as final_error:
@@ -600,7 +669,6 @@ class DocumentIngestor:
     @staticmethod  
     def _example_id_for(description: str, source_filename: str, row_num: int) -> str:
         """Deterministic ID for query examples to prevent duplicates."""
-        # Use row number to handle duplicate descriptions
         desc_hash = hash(description.lower())
         return f"example::{source_filename}::{row_num}::{desc_hash}"
 
@@ -629,6 +697,7 @@ class DocumentIngestor:
             error_msg = f"Error deleting field records: {str(e)}"
             logger.error(error_msg)
             return {"success": False, "error": error_msg}
+
 
     def delete_examples_by_source_file(self, source_file: str) -> Dict[str, Any]:
         """Delete all query example records from a specific source file."""

@@ -103,3 +103,13 @@ def delete_examples_by_source_file(source_file: str, ingestor: DocumentIngestor 
     if not result.get("success"):
         return JSONResponse(status_code=400, content=result)
     return result
+
+@router.delete("/clear-all-collections")
+def clear_all_collections(ingestor: DocumentIngestor = Depends(get_ingestor)):
+    """
+    Clear all collections.
+    """
+    result = ingestor.clear_all_collections()
+    if not result.get("success"):
+        return JSONResponse(status_code=400, content=result)
+    return result

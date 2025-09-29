@@ -1,14 +1,10 @@
-# Personal Diary Assistant - Core Dependencies
 memorisdk>=0.1.0
 litellm>=1.0.0
 python-dotenv>=1.0.0
 python-multipart
-# Streamlit UI Dependencies  
-streamlit>=1.28.0
 plotly>=5.17.0
 pandas>=2.0.0
 
-# Additional useful packages
 openai>=1.0.0
 requests>=2.31.0
 sqlalchemy
@@ -20,7 +16,12 @@ langchain-postgres
 langchain-text-splitters
 sqlalchemy 
 psycopg[binary]
+psycopg2-binary
 
+langchain-google-genai 
+langchain-huggingface 
+sentence_transformers
+google-generativeai
 
 fastapi
 uvicorn

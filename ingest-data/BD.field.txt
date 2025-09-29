@@ -1,0 +1,197 @@
+Old Alias,Alias,Long Name,Definition,Data Type,Example Value,Remark
+logid,logid,logid,Unique identifier for the stored event/log record,uuid,30C11F20-2170-1033-95DF-000C293DBE11,Uniq
+receiveyear,receiveyear,ReceiveYear,Calendar year when the platform received the event (observer TZ normalized),int32,2016,
+receivemonth,receivemonth,ReceiveMonth,Month of year (1–12) when received,int32,1,
+,receivedayinyear,ReceiveDayinYear,Day of year (1–366) when received,int32,19,New field
+receivedayofmonth,receivedayinmonth,ReceiveDayinMonth,Day of month (1–31) when received,int32,19,
+receivedayofweek,receivedayinweek,ReceiveDayinWeek,Day of week (1–7; Mon=1),int32,2,New field
+receivehour,receivehour,ReceiveHour,Hour of day (0–23) when received,int32,14,
+receiveminute,receiveminute,ReceiveMinute,Minute (0–59) when received,int32,59,
+receivesecond,receivesecond,ReceiveSecond,Second (0–59) when received,int32,58,
+receivemillisecond,receivemillisecond,ReceiveMillisecond,Milliseconds (0–999) when received,int32,123,
+receivezone,receivezone,ReceiveTZOffset,Receive timezone offset in milliseconds from UTC,int32,2800000,
+receivedate,receivedate,ReceiveDate,Full receive timestamp with offset (ISO-8601),datetime,2016-01-19T14:59:58.223-0700,
+receivems,receivems,ReceiveEpochMs,Receive timestamp in epoch milliseconds (UTC),epoch_ms,1452063598000,
+srclogserip,couip,CourierIP,IP address of courier/forwarder,ip,172.30.200.10,duplicate with repip
+srclogserhostname,couname,CourierHostName,Hostname of courier/forwarder,hostname,mycourierhk1,duplicate with rn
+collectorip,colip,CollectorHostIP,Collector IP address,ip,172.30.200.223,
+collectorhostname,colname,CollectorHostName,Collector hostname,hostname,mycollectorhk1,
+collectorport,colport,CollectorPort,Collector listen port,port,,
+parselogstatus,parselogstatus,ParseLogStatus,Result of parser stage,string,,possible values: success | failed | no_parser
+parselogerror,parselogerror,ParseLogError,Parser error details if parsing failed,string,,parser exception stacktrace when parselogstatus = failed
+parserid,parserid,ParserID,Numeric ID/version of parser used,int64,,
+tenantname,tenantname,TenantName,Tenant/account name,string,,
+rawmsg,rawmsg,RawMessage,Original unmodified message payload,string,"<189>Jan  6 14:59:58 SyslogAlertForwarder: alert_id:…",
+sha256hash,sha256hash,sha256Hash,SHA-256 hash of rawmsg (hex),string,9d5b68096476960f778e06059f33f19c85f3c2cf90ab7354a022310b80ddaf52,hash the raw log
+mappedseverity,mappedseverity,MappedSeverity,Platform-normalized severity,int32,1,1
+parsertype,parsertype,ParserType,Parser family/type,string,syslog,
+parserver,parserver,ParserVersion,Parser version,string,1.0,
+parsedtime,parsedtime,ParsedTime,Time the record finished parse/ingest,datetime,,
+logcode,logcode,SyslogPriority,Syslog PRI/facility+severity code,int32,34,
+logdate,logdate,SyslogDate,Original log-provided date header (as found),string,"Sep  3 09:03:19",
+com,com,Comment,Free-form comment/annotation,string,,
+eudom,eftudomain,EffectiveUserDomain,Effective user domain,string,,
+euid,eftuid,EffectiveUserID,Effective user ID,string,,
+euname,eftuname,EffectiveUserName,Effective user name,string,,
+evt,evt,EventName,Event name/title (vendor or mapped),string,1,
+ei,einfo,ExtendedInformation,Extended info blob (vendor-specific),string,1,
+idsattackname,idsattackname,IDSAttackName,IDS/IPS attack signature name,string,1,
+idsname,idsname,IDSName,IDS/IPS device/profile name,string,1,
+impact,imp,Impact,Impact rating/label,string,,
+iemail,srcemail,SourceEmail,Source email address,string,1,
+isvcc,srcsvccpn,SourceServiceComponent,Source service component,string,1,
+sp,srcsvcname,SourceServiceName,Source service/application name,string,1,
+iudep,srcudept,SourceUserDepartment,Source user department,string,,
+iud,srcudomain,SourceUserDomain,Source user domain,string,,
+iufname,srcufullname,SourceUserFullName,Source user full name,string,,
+iuid,srcuid,SourceUserID,Source user ID,string,,
+iuident,srcuident,SourceUserIdentityID,Source user identity ID,string,,
+sun,srcuname,SourceUserName,Source user name,string,1,
+iup,srcup,SourceUserPrivilegeLevel,Source user privilege level,string,,
+iwfid,srcwfid,SourceUserWorkforceID,Source user workforce/HR ID,string,,
+inputbytes,inputbytes,InputBytes,Inbound bytes for the event/flow,int64,,
+malname,malname,MalwareName,Malware name (AV/IDS),string,1,
+msg,msg,Message,Parsed message/body (cleaned),string,"*",,
+obsclass,obsclass,ObserverHostClass,Observer/collector host class,string,,
+obscountry,obscountry,ObserverHostCountry,Observer host country (ISO or label),string,,
+obscrit,obscrit,ObserverHostCriticality,Observer host criticality,string,,
+obsdep,obsdept,ObserverHostDepartment,Observer host department,string,,
+obsdom,obsdomain,ObserverHostDomain,Observer host domain,string,,
+obsfunc,obsfunc,ObserverHostFunction,Observer host function/role,string,,
+obsassetid,obsassetid,ObserverHostID,Observer asset identifier,string,,
+obslat,obslat,ObserverHostLatitude,Observer latitude,float64,,
+obslong,obslong,ObserverHostLongitude,Observer longitude,float64,,"(obtlong in solr)"
+obsname,obsname,ObserverHostName,Observer host name,hostname,1,
+obsip,obsip,ObserverIP,Observer IP address,ip,1,
+obsmac,obsmac,ObserverMAC,Observer MAC address,string,1,
+obscomponent,obssvccpn,ObserverServiceComponent,Observer service component,string,,
+obssvcname,obssvcname,ObserverServiceName,Observer service/application name,string,1,
+outputbytes,outputbytes,OutputBytes,Outbound bytes for the event/flow,int64,,
+owner,ownid,OwnerID,Record owner ID,string,,"(owner in solr)"
+oname,ownname,OwnerName,Record owner display/name,string,,
+polid,polid,PolicyID,Policy identifier that matched/applied,string,,
+priority,priority,Priority,Vendor/native priority label/value,string,,
+pn,pname,ProductName,Product/device name,string,1,
+prot,prot,Protocol,L3/L4 protocol (e.g., tcp/udp/icmp),string,1,
+rc,rc,RepeatCount,Repeat count for aggregated duplicates,int32,,
+repclass,couclass,CourierHostClass,Courier host class,string,,
+repcrit,coucrit,CourierHostCriticality,Courier host criticality,string,,
+repdep,coudept,CourierHostDepartment,Courier host department,string,,
+repdom,coudomain,CourierHostDomain,Courier host domain,string,,
+repfunc,coufunc,CourierHostFunction,Courier host function,string,,
+repassetid,couid,CourierHostID,Courier host ID,string,,
+repmac,coumac,CourierMAC,Courier MAC address,string,1,
+revision,revision,Revision,Event revision/version,string,,
+sessid,sessid,SessionID,Session identifier,string,,
+sesstype,sesstype,SessionType,Session type/kind,string,,
+sev,sev,Severity,Native severity label/value,string,1,
+,srcaddr,SourceHostAddress,Source FQDN or URL host component,string,david.something.maximusholding.com,"Example web: https://david.something.maximusholding.com"
+srchostclass,srcclass,SourceHostClass,Source host class,string,,
+srchostcountry,srccountry,SourceHostCountry,Source host country,string,1,
+srchostcriticality,srccrit,SourceHostCriticality,Source host criticality,string,,
+srchostdpt,srcdept,SourceHostDepartment,Source host department,string,,
+srchostdomain,srcdomain,SourceHostDomain,Source host domain,string,something.maximusholding.com,"Example web host"
+srchostfunction,srcfunc,SourceHostFunction,Source host function/role,string,,
+srchostid,srcid,SourceHostID,Source asset/host ID,string,,
+srchostlat,srclat,SourceHostLatitude,Source latitude,float64,,
+srchostlong,srclong,SourceHostLongitude,Source longitude,float64,,
+srchostname,srcname,SourceHostName,Source short host name,string,david,"Example host"
+srcip,srcip,SourceIP,Source IP address,ip,1,
+srcmac,srcmac,SourceMAC,Source MAC address,string,1,
+srcnetzone,srcnetzone,SourceNetworkZone,Source network zone label,string,1,
+srcport,srcport,SourcePort,Source port number,port,1,
+srctranip,srctip,SourceTranslatedIP,Source translated/NAT IP,ip,,
+srctranmac,srctmac,SourceTranslatedMAC,Source translated MAC,string,,
+srctranport,srctport,SourceTranslatedPort,Source translated port,port,,
+state,state,State,Event outcome/state (e.g., allowed/blocked),string,,
+tags,tags,Tags,User/system tags,array<string>,,
+trgattname,trgattname,TargetAttributeName,Target attribute name (changed field),string,,
+trgattorival,trgattorival,TargetAttributeOriginalValue,Target attribute original value,string,,
+trgattval,trgattval,TargetAttributeValue,Target attribute new value,string,,
+trgdtcat,trgdtcat,TargetDataCategory,Target data category,label,string,,
+trgdtcontainer,trgdtcontainer,TargetDataContainer,Target resource container/path,string,/david/isagood/,"Example URL path"
+trgdtname,trgdtname,TargetDataName,Target data object/file name,string,man.html,"Example URL file"
+trgdtnamespace,trgdtnamespace,TargetDataNamespace,Target data namespace/scheme,string,https,
+trgdtsensitivity,trgdtsensitivity,TargetDataSensitivity,Target data sensitivity label,string,,
+trgemail,trgemail,TargetEmail,Target email address,string,,
+,trgaddr,TargetHostAddress,Target FQDN or URL host component,string,david.something.maximusholding.com,"Example web host"
+trghostclass,trgclass,TargetHostClass,Target host class,string,,
+trghostcountry,trgcountry,TargetHostCountry,Target host country,string,,
+trghostcriticality,trgcrit,TargetHostCriticality,Target host criticality,string,,
+trghostdpt,trgdept,TargetHostDepartment,Target host department,string,,
+trghostdomain,trgdomain,TargetHostDomain,Target host domain,string,something.maximusholding.com,"Example web host"
+trghostfunction,trgfunc,TargetHostFunction,Target host function/role,string,,
+trghostid,trgid,TargetHostID,Target asset/host ID,string,,
+trghostlat,trglat,TargetHostLatitude,Target latitude,float64,,
+trghostlong,trglong,TargetHostLongitude,Target longitude,float64,,
+trghostname,trgname,TargetHostName,Target short host name,string,david,
+trgip,trgip,TargetIP,Target IP address,ip,1,
+trgmac,trgmac,TargetMAC,Target MAC address,string,1,
+trgnetzone,trgnetzone,TargetNetworkZone,Target network zone label,string,1,
+trgport,trgport,TargetPort,Target port number,port,1,
+trgsercomponent,trgsvccpn,TargetServiceComponent,Target service component,string,1,
+trgsername,trgsvcname,TargetServiceName,Target service/application name,string,1,
+trgtranip,trgtranip,TargetTranslatedIP,Target translated/NAT IP,ip,,
+trgtranmac,trgtranmac,TargetTranslatedMAC,Target translated MAC,string,,
+trgtranport,trgtranport,TargetTranslatedPort,Target translated port,port,,
+trgtrudomain,trgtrudomain,TargetTrustDomain,Target trust domain,string,,
+trgtruid,trgtruid,TargetTrustID,Target trust ID,string,,
+trgtruname,trgtruname,TargetTrustName,Target trust name,string,,
+trguserdpt,trgudept,TargetUserDepartment,Target user department,string,1,
+trguserdomain,trgudomain,TargetUserDomain,Target user domain,string,1,
+trguserfullname,trgufullname,TargetUserFullName,Target user full name,string,,
+trguserid,trguid,TargetUserID,Target user ID,string,,
+trguserident,trguident,TargetUserIdentity,Target user identity ID,string,,
+trgusername,trguname,TargetUserName,Target user name,string,1,
+trguserwid,trguwid,TargetUserWorkforceID,Target user workforce/HR ID,string,,
+evtgrpid,transactionid,TransactionID,Transaction/correlation identifier,string,,
+vec,vec,VendorEventCode,Vendor event code,string,,
+voc,voc,VendorOutcomeCode,Vendor outcome code,string,,
+vul,vul,Vulnerability,Vulnerability list/details,array<string>,,arrStr
+taxevtst,taxevtst,EventSourceType,Taxonomy: source type,int32,,integer
+taxevtobj,taxevtobj,EventObject,Taxonomy: event object,int32,,integer
+taxevtcon,taxevtcon,EventContext,Taxonomy: event context,int32,,integer
+taxevtact,taxevtact,EventAction,Taxonomy: event action,int32,,integer
+taxoutobj,taxoutobj,OutcomeObject,Taxonomy: outcome object,int32,,integer
+taxoutcon,taxoutcon,OutcomeContext,Taxonomy: outcome context,int32,,integer
+taxoutpro,taxoutpro,OutcomeProfile,Taxonomy: outcome profile,int32,,integer
+corinfoid,corrinfoid,CorrelationInfoID,Correlation info identifier,string,1,
+triggeredevt,triggeredevt,TriggeredEvent,Triggered event name/id,string,,
+triggeredaction,triggeredact,TriggeredAction,Triggered action name/id,string,,
+srciface,srciface,SourceInterface,Source interface name,string,1,
+trgiface,trgiface,TargetInterface,Target interface name,string,1,
+trgifacestatus,trgifacestatus,TargetInterfaceStatus,Target interface status,string,,
+srcifacestatus,srcifacestatus,SourceInterfaceStatus,Source interface status,string,,
+ppsthreshold,ppsthreshold,PacketPerSecondThreshold,Packets/s threshold used,int64,,
+trafficdirection,trafficdirection,TrafficDirection,Traffic direction label (e.g., Inbound/Outbound),string,,
+bandwidththreshold,bandwidththreshold,BandwidthThreshold,Bandwidth threshold used,int64,,
+bandwidth,bandwidth,Bandwidth,Observed bandwidth (bytes/s unless noted),int64,,
+pps,pps,PacketPerSecond,Observed packets per second,int64,,
+,blsrc_*,BlacklistSource_*,Blacklist name → score (per entity),map<string,int32>,"{A:2,B:3}",Blacklist dynamicField
+,blname_*,BlacklistName_*,Blacklist names (per entity),array<string>,"[A, B]",Blacklist dynamicField
+,blscore_*,BlacklistScore_*,Blacklist scores (per entity),array<int32>,,Blacklist dynamicField
+,rescpu_name,CPU Name,CPU names reported,array<string>,"cpu1,cpu2,cpu3",SNMP
+,rescpu_util,CPU Utilization,Per-CPU utilization values,array<float64>,"85,18,49",SNMP
+,rescpu_unit,CPU Utilization Unit,Unit for CPU utilization,string,percentage,SNMP
+,rescpu_opct,Average CPU Utilization,Average CPU utilization,float64,87,SNMP
+,resdis_name,Disk Name,Disk mount/label names,array<string>,"/var,/opt,/tmp",SNMP
+,resdis_size,Disk Size,Disk sizes (units in resdis_unit),array<int64>,"213453,124543,543556",SNMP
+,resdis_used,Disk Used,Disk used values,array<int64>,"12432,45353,253364",SNMP
+,resdis_unit,Disk Size Unit,Unit for disk sizes,string,kbyte,SNMP
+,resdis_util,Disk Usage Utilization,Disk usage percentages,array<float64>,"87,12,58",SNMP
+,resdis_opct,Average Disk Utilization,Average disk utilization,float64,96,SNMP
+,resnic_name,Network Interface Name,Network interface names,array<string>,"nic1,nic2,nic3",SNMP
+,resnic_smax,Network Interface Max Packets,Per-NIC max packets allowed,array<int32>,"1000,1000,1000",SNMP
+,resnic_tran,Network Interface Transmission Packets,Per-NIC transmitted packets,array<int64>,"800,192,102",SNMP
+,resnic_recv,Network Interface Receive Packets,Per-NIC received packets,array<int64>,"192,392,291",SNMP
+,resnic_adst,Network Interface Admin Status,Per-NIC admin status (1/0),array<boolean>,"1,1,1",SNMP
+,resnic_opst,Network Interface Oper Status,Per-NIC operational status (1/0),array<boolean>,"1,0,1",SNMP
+,resnic_util,Network Interface Utilization,Per-NIC utilization percentages,array<float64>,"90,50,40",SNMP
+,resmem_name,RAM Name,Memory pool name,array<string>,memory1,SNMP
+,resmem_size,RAM Size,Memory size values,array<int64>,32454323,SNMP
+,resmem_used,RAM Used,Memory used values,array<int64>,2422245,SNMP
+,resmem_unit,RAM Size Unit,Unit for memory size,string,kbyte,SNMP
+,resmem_util,RAM Utilization,Memory utilization percentage,float64,74,SNMP
+,resmem_opct,Average RAM Utilization,Average memory utilization,float64,74,SNMP
+,cevtid,Correlation Event UUID,Correlation Event UUID attached to raw,string,30C11F20-2170-1033-95DF-000C293DBE11,SIEM-291 PoC on add triggered id to raw message
+,collectionname,SOLR Collection Name,Solr/index collection name,string,Log-STWUTIL01-201912301315,SIEM-291 PoC on add triggered id to raw message

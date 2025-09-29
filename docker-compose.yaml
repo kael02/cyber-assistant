@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"  # FastAPI
+    env_file:
+      - .env
+    volumes:
+      # - ./data:/app/data
+      - ./logs:/app/logs
+    # depends_on:
+    #   - postgres
+    #   - redis
+    restart: unless-stopped
+
+  # postgres:
+  #   image: postgres:15-alpine
+  #   environment:
+  #     POSTGRES_DB: diary_db
+  #     POSTGRES_USER: diary_user
+  #     POSTGRES_PASSWORD: diary_password
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   ports:
+  #     - "5432:5432"
+  #   restart: unless-stopped
+
+  # redis:
+  #   image: redis:7-alpine
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   restart: unless-stopped
+
+# volumes:
+#   postgres_data:
+#   redis_data:
